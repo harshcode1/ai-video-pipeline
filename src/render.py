@@ -4,6 +4,7 @@ after a crash only redoes what's missing.
 Usage:
   python src/render.py --indices 1,2,5,34,65   # checkpoint / partial run
   python src/render.py --all                    # full 69-scene run
+  python src/render.py --all --no-upscale       # skip Real-ESRGAN (no GPU/binary)
 """
 import argparse
 
@@ -18,7 +19,7 @@ from tts import EdgeTTSProvider
 from upscale import get_upscaled_image
 
 
-def run(indices: list, output_path, label: str):
+def run(indices: list, output_path, label: str, upscale: bool = True):
     print(f"=== render.py: {label} ({len(indices)} scene(s): {indices}) ===\n")
 
     meta, all_scenes = parse.build_scenes()
@@ -45,9 +46,16 @@ def run(indices: list, output_path, label: str):
     for s in selected:
         get_image(s, img_provider)
 
-    print("\n--- Stage 4/5: Upscale (Real-ESRGAN 4x, local/offline, cached) ---")
-    for s in selected:
-        get_upscaled_image(s)
+    if upscale:
+        print("\n--- Stage 4/5: Upscale (Real-ESRGAN 4x, local/offline, cached) ---")
+        for s in selected:
+            get_upscaled_image(s)
+    else:
+        # assemble.render_scene_clip() falls back to the raw build/images/NN.png
+        # when no upscaled file exists, so skipping here costs sharpness, not a
+        # broken render. This is the escape hatch for machines without the
+        # Real-ESRGAN binary or a Vulkan-capable GPU.
+        print("\n--- Stage 4/5: Upscale SKIPPED (--no-upscale) -> using raw 1024x576 sources ---")
 
     print("\n--- Stage 5/5: Assemble (ffmpeg: per-scene clip -> xfade -> mux) ---")
     clip_paths = [render_scene_clip(s) for s in selected]
@@ -78,6 +86,9 @@ def main():
     group.add_argument("--all", action="store_true", help="Render all 69 scenes")
     ap.add_argument("--label", type=str, default=None, help="Label for merged intermediate/output filenames")
     ap.add_argument("--out", type=str, default=None, help="Output mp4 path override")
+    ap.add_argument("--no-upscale", action="store_true",
+                    help="Skip the Real-ESRGAN stage and use the raw 1024x576 images "
+                         "(softer output, but needs no GPU or binary download)")
     args = ap.parse_args()
 
     if args.all:
@@ -90,7 +101,7 @@ def main():
         label = args.label or "checkpoint_" + "-".join(str(i) for i in indices)
         out = config.ROOT / args.out if args.out else config.OUTPUT_DIR / f"{label}.mp4"
 
-    run(indices, out, label)
+    run(indices, out, label, upscale=not args.no_upscale)
 
 
 if __name__ == "__main__":

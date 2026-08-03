@@ -17,7 +17,9 @@ __pycache__/
 .pytest_cache/
 
 # --- Editors / OS ---
-.claude/
+# NOTE: .claude/ is intentionally NOT ignored -- .claude/commands/make-video.md
+# is the shipped Claude Code workflow and must be committed.
+.claude/settings.local.json
 .vscode/
 .idea/
 Thumbs.db

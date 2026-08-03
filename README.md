@@ -62,10 +62,32 @@ therefore **not committed**:
 Finally, create `input/Script.txt` and `input/Visuals.txt` — see
 [`input/README.md`](input/README.md) for the exact format.
 
+## Quick start with Claude Code
+
+If you have [Claude Code](https://claude.com/claude-code), you don't need to
+learn any of this. Open this folder and type:
+
+```
+/make-video
+```
+
+It checks your environment, asks four questions (topic, language/voice, length,
+visual style), writes the script and image prompts for you, renders a short
+checkpoint for your approval, then runs the full render and hands you the
+finished file. `CLAUDE.md` is loaded automatically, so Claude already knows how
+the pipeline works and how to resume it if something crashes.
+
+You still need ffmpeg installed — see Setup below.
+
 ## Usage
 
+Everything below is the manual path.
+
 ```bash
-# Parse and inspect the scene table first -- no network calls, fast sanity check
+# Check your environment first: ffmpeg, deps, upscaler, inputs
+python src/doctor.py
+
+# Parse and inspect the scene table -- no network calls, fast sanity check
 python src/parse.py
 
 # Render a few scenes as a checkpoint before committing to a full run
@@ -73,10 +95,21 @@ python src/render.py --indices 1,2,5,34,65
 
 # Full run
 python src/render.py --all
+
+# Full run without Real-ESRGAN (softer output, but no GPU or binary needed)
+python src/render.py --all --no-upscale
 ```
 
 Optional flags: `--label` names the merged intermediates, `--out` overrides the
 output path. Output lands in `output/`; all intermediates in `build/`.
+
+**Every stage is cached, so if a run crashes, just rerun the same command** — it
+resumes rather than starting over. Don't delete `build/` to "clean up"; that's
+the resume cache, and throwing it away costs hours of re-downloading and
+re-upscaling.
+
+A full ~69-scene run takes **1.5–3 hours**, dominated by the 15s-per-image
+Pollinations throttle (~17 min) and Real-ESRGAN upscaling (~46s per image).
 
 Two extra tools:
 
@@ -92,14 +125,22 @@ whether the video actually reads as moving (mean inter-frame difference), so
 
 ## Tests
 
+Plain asserts, no pytest dependency:
+
 ```bash
-python -m pytest tests/
+python tests/test_assemble.py
 ```
+
+Covers `compute_offsets()` — the xfade offset math, where a silent bug would
+cascade through every join in the render.
 
 ## Repository layout
 
 ```
+CLAUDE.md      auto-loaded context for Claude Code
+.claude/       /make-video workflow command
 src/           pipeline modules (config.py is the single source of truth)
+src/doctor.py  environment preflight check
 tests/         unit tests
 input/         Script.txt + Visuals.txt  (gitignored -- see input/README.md)
 build/         all intermediates: audio, images, upscales, scene clips (gitignored)
