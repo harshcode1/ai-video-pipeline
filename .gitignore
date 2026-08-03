@@ -1,0 +1,24 @@
+# --- Generated media (all of it is reproducible from input/ + src/) ---
+build/
+output/
+
+# --- Third-party binary download (see README: Real-ESRGAN setup) ---
+tools/
+
+# --- Script content (personal / per-video, not part of the pipeline) ---
+input/*.txt
+
+# --- Python ---
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# --- Editors / OS ---
+.claude/
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
