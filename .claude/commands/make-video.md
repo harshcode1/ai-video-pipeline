@@ -1,119 +1,170 @@
 ---
-description: Interview the user, then generate and render a complete narrated video end to end
+description: Make a complete narrated video - asks a few questions, then does everything
 argument-hint: "[optional topic or script]"
 ---
 
-You are going to take this user from an idea to a finished narrated video. They
-may know nothing about this codebase — do not make them learn it. Ask a few
-questions, then do all the work.
+Take the user from an idea to a finished, upload-ready video.
 
-If `$ARGUMENTS` is non-empty, treat it as their answer to Question 1 and don't
-ask it again.
+## Who you're talking to
+
+**He is a working YouTuber who makes his living on the platform. He is not a
+programmer.** Calibrate both halves of that:
+
+- **On anything creative — do not explain, ask.** He knows hooks, retention,
+  pacing, titles, thumbnails and CTR better than you do. Use his vocabulary
+  freely. Never define a term he uses professionally. Never lecture him about
+  what makes a good video.
+- **On anything technical — plain English, and just handle it.** No tracebacks,
+  no file paths he didn't ask for, no jargon. He should never see the words
+  "LUFS", "ffmpeg", "venv", or "stderr" unless he brings them up.
+- Creative calls are his. Technical calls are yours. Don't hand him a decision
+  that's really yours to make (which voice ID, which tile size, whether to
+  upscale) and don't quietly make one that's really his (the hook, the angle,
+  the title).
+
+Worth stating **once**, early, because it's his professional context: output is
+1080p 16:9, and the audio is normalized to YouTube's own loudness target, so it
+won't get turned down on upload.
+
+If `$ARGUMENTS` is non-empty, treat it as his answer to Question 1.
 
 ---
 
-## Step 1 — Preflight (do this before asking anything)
+## Step 0 — Make sure the machine is ready
 
-Run `python src/doctor.py`.
+Run `.venv\Scripts\python.exe src\doctor.py` (or `python src/doctor.py` if
+there's no `.venv` yet).
 
-- If it exits **non-zero**, it prints exactly what's blocking. Fix what you can
-  (e.g. `pip install -r requirements.txt`), tell the user plainly what they must
-  do themselves (installing ffmpeg needs their machine), and stop. Do not
-  proceed to a render that will fail.
-- Note whether a working **upscaler** was found. If not, every render command
-  below needs `--no-upscale`. Do not ask the user about this — it's a hardware
-  fact you just measured.
+- **If it passes:** say nothing about it. Move on.
+- **If it fails:** don't send him to another command. Fix it inline by following
+  `.claude/commands/setup.md`, asking permission once in plain English first.
+  Something like: "Quick thing — a couple of tools aren't installed yet. Want me
+  to set them up? Takes a minute or two."
+- Note whether a working upscaler exists. If not, add `--no-upscale` to every
+  render command below. **Never ask him about this** — it's a hardware fact you
+  just measured, not a preference.
 
-Do not mention doctor's warnings about missing `input/*.txt` — you're about to
-create those.
+## Step 1 — Offer the shortcut first
 
-## Step 2 — Ask exactly these four questions
+Before the questions, give him the option to skip them:
 
-Ask them together in one round, not one at a time. Offer the defaults shown.
+> I can either walk you through a few choices, or you just tell me the topic and
+> I'll make all the calls myself. Which do you want?
 
-1. **What's the video about?** They can paste a full script, or just give a
-   topic/idea and you'll write the narration yourself. Make clear both are fine.
-2. **What language and voice?** Default is Hindi (`hi-IN-SwaraNeural`). Run
-   `edge-tts --list-voices` to offer 2–3 real options for whatever language they
-   name. **Never invent a voice name** — only use one that appears in that list.
-3. **Roughly how long should it be?** Default ~10 minutes. Convert to a scene
-   count at **~4 scenes per minute** (~15s of narration each), and warn them
-   that longer means hours of render time.
-4. **What visual style/vibe?** Default preset: dark symbolic expressionist
-   illustration, psychological noir, muted earth tones with one amber accent,
-   matte oil painting texture, no photorealism. Or they describe their own.
+If he picks the fast path, ask only for the topic and choose everything else
+yourself using the defaults below. Tell him what you picked when you present the
+sample in Step 4 — don't make him find out by watching.
 
-## Step 3 — Write the two input files
+## Step 2 — The four questions
 
-Create `input/Script.txt` and `input/Visuals.txt`. Read `input/README.md` for the
-exact format first. The rules that actually matter:
+Ask them in **one** round, not one at a time. On every question, explicitly
+offer "or I can pick" so he never has to have an opinion he doesn't have.
 
-- **Timestamps must match exactly between the two files.** This is the join key.
-  A mismatch aborts the whole run. Space them ~15s apart, accumulating
-  realistically (`[00:00]`, `[00:15]`, `[00:31]`, …).
-- `Script.txt` gets a `Title:` and `Thumbnail Text:` header, then one timestamped
-  narration line per scene.
+**1. What's the video about?**
+Does he want to paste his own script, or give you the topic and angle and have
+you draft it? If you're drafting, ask what angle or hook he wants — that's his
+expertise, not yours. Default: you draft, he edits.
+
+**2. Language, and how should the voice feel?**
+Ask for the language and the delivery he wants — calm and slow, dramatic,
+high-energy, conspiratorial, whatever he says. **You** then map that to a real
+voice: run `edge-tts --list-voices` and pick from it. Offer him 2–3 real options
+if he wants to choose the voice himself. **Never invent a voice name** — only use
+one that appears in that list. Default: Hindi, `hi-IN-SwaraNeural`.
+
+**3. How long?**
+His call — he knows his own retention curve. Convert to scenes at ~4 per minute
+(~15s of narration each). Tell him the honest render time before he commits: a
+10-minute video is roughly 1–2 hours of rendering, ~18 minutes is 2–3 hours.
+
+**4. What should it look like?**
+Ask for the visual vibe. Default preset: dark symbolic expressionist
+illustration, psychological noir, muted earth tones with one amber accent, matte
+oil painting texture, no photorealism, no faces in focus.
+
+**Also draft 2–3 title options and a thumbnail text option and let him pick.**
+Titles and thumbnail text are pure CTR — that's his professional judgment, so
+offer choices rather than deciding. These go in the `Title:` and
+`Thumbnail Text:` header lines of `Script.txt`.
+
+## Step 3 — Build the inputs
+
+Read `input/README.md` for the exact format, then write `input/Script.txt` and
+`input/Visuals.txt`. What actually matters:
+
+- **Timestamps must match exactly between the two files.** This is the join key;
+  a mismatch aborts everything. Space them ~15s apart, accumulating realistically.
+- One narration line per scene in `Script.txt`, under the `Title:` /
+  `Thumbnail Text:` header.
 - Use `[directives]` sparingly — `[thoughtful]`, `[dramatic tone]`, `[curious]`,
-  `[softly]`, `[whispers]`, `[sighs]`, `[pause]`, `[long pause]`. A few per
-  video, not on every line, or the effect flattens out. A `[pause]` goes on its
+  `[softly]`, `[whispers]`, `[sighs]`, `[pause]`, `[long pause]`. A handful per
+  video, not on every line, or the effect flattens out. `[pause]` goes on its
   **own line sharing the same timestamp** as the line it precedes.
-- Every scene must have real spoken words left after directives are stripped.
-- `Visuals.txt` gets one `IMAGE:` prompt per scene. **Append the identical style
-  suffix to every single prompt** — this plus the fixed seed is the only reason
-  the images look like one coherent film. End each with `no text, 16:9`.
-- Prompts should be symbolic and concrete (an object, a space, a light source),
-  not literal illustrations of the sentence. Never put words in the image.
+- Every scene needs real words left after directives are stripped.
+- One `IMAGE:` prompt per scene in `Visuals.txt`, and **append the identical
+  style suffix to every single prompt.** That plus the fixed seed is the only
+  reason 60+ images look like one film instead of a slideshow. End each with
+  `no text, 16:9`.
+- Prompts should be symbolic and concrete — an object, a space, a light source —
+  not literal illustrations of the sentence. Never put words inside an image.
 
-Then run `python src/parse.py` and confirm it reports the scene count you
-intended with no warnings. Fix anything it complains about before continuing.
+If he wrote the script himself, keep his words. Reformat and add timestamps, but
+don't rewrite his lines.
 
-## Step 4 — Set the voice
+Then run `parse.py` and confirm the scene count is what you intended with no
+warnings. Fix anything it flags before moving on. Don't show him this step.
 
-If they chose a non-default voice, update `TTS_VOICE` in `src/config.py`. That
-file is the single source of truth — don't patch it anywhere else.
+## Step 4 — Sample first, then stop
 
-## Step 5 — Checkpoint render, then STOP and show them
+Set `TTS_VOICE` in `src/config.py` if he chose a non-default voice. Then:
 
 ```
-python src/render.py --indices 1,2,3 --label checkpoint
+python src/render.py --indices 1,2,3 --label sample
 ```
 
-This takes a few minutes, not hours. Then **stop and report**: give them the
-output path and tell them to watch it and check three things — voice/pacing,
-visual style, and whether the images match the narration.
+A few minutes, not hours. Then **stop and hand it to him**:
 
-**Wait for their approval before Step 6.** This is the whole point: catching a
-wrong voice at minute 5 instead of hour 2. If they want changes, adjust
-(`config.py` for voice/prosody, `Visuals.txt` for style) and re-checkpoint.
+> Here's the first 45 seconds so you can check it before I render the whole
+> thing: <path>
+>
+> Listen for the voice and pacing, and see if the look is right. Anything you
+> want changed?
 
-Note: changing the style means the already-generated images are stale — delete
-only the specific files in `build/images/` and `build/images_upscaled/` that need
-regenerating. **Never delete all of `build/`.**
+If he asked you to make the calls yourself, list what you chose here — voice,
+length, style, title.
 
-## Step 6 — Full render
+**Do not start the full render until he approves.** This is the entire point:
+catching a wrong voice at minute 5 instead of hour 2.
+
+If he wants changes: voice and delivery live in `src/config.py`, look lives in
+`Visuals.txt`, words live in `Script.txt`. Re-render the sample. When changing
+the look, delete only the specific stale files in `build/images/` and
+`build/images_upscaled/` — **never all of `build/`**, which is the resume cache
+and costs hours to rebuild.
+
+## Step 5 — Full render
 
 ```
 python src/render.py --all
 ```
 
-- **Run this in the background with a multi-hour timeout.** It is genuinely
-  1.5–3 hours. A default timeout will kill it partway.
-- Tell them upfront it's running and roughly how long it'll take.
+- **Run it in the background with a multi-hour timeout.** A default timeout will
+  kill it partway through.
+- Tell him it's running and roughly how long, so he can walk away.
 - If it crashes, **rerun the identical command** — every stage is cached and it
-  picks up where it stopped. Read `CLAUDE.md`'s failure playbook before trying
-  anything cleverer.
+  resumes where it stopped. Check `CLAUDE.md`'s failure playbook before trying
+  anything cleverer. Don't relay the error text to him; just say you hit a snag
+  and are picking it back up.
 
-## Step 7 — Report
+## Step 6 — Hand it over
 
-When it finishes, tell them:
+Lead with the file path — he waited hours for it. Then:
 
-- The **full path** to the finished file in `output/`
-- Its **duration and file size** (use `ffprobe`)
-- The scene count, voice, and style you used
-- That they should watch it and say what to change
+- Length and file size
+- The title and thumbnail text you used, so he can copy them straight into the
+  upload form
+- One line inviting notes
 
-Optionally run `python src/forensics.py` and share the loudness and motion
-numbers — it measures whether the audio actually sounds expressive and the video
-actually reads as moving, so "sounds flat" becomes a number instead of a guess.
-
-Keep the final message short. They waited hours; lead with the file path.
+Keep it short. If he wants numbers on it, `python src/forensics.py` reports
+loudness, how expressive the delivery measured, and how much the frame actually
+moves — translate those into plain terms rather than pasting the table.

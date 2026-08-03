@@ -50,34 +50,78 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+`requirements.txt` is deliberately small and pure-python. The optional QA extras
+(numpy, librosa, opencv, praat) are in `requirements-forensics.txt` and are only
+needed for `src/forensics.py` — a render never imports them, so a failed opencv
+build can't block you from making a video.
+
+ffmpeg on Windows: `winget install --id Gyan.FFmpeg -e`. No shell restart needed
+— `ffmpeg_utils.py` scans the winget install path directly.
+
 Then add the Real-ESRGAN binary, which is a large third-party download and is
 therefore **not committed**:
 
-1. Grab the `ncnn-vulkan` build from
-   [Real-ESRGAN releases](https://github.com/xinntao/Real-ESRGAN/releases).
+1. Download
+   [`realesrgan-ncnn-vulkan-20220424-windows.zip`](https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip)
+   (~45 MB). Note the tag is **v0.2.5.0** — the newer v0.3.0 release publishes no
+   Windows binary, so don't go looking at "latest".
 2. Extract it to `tools/realesrgan-ncnn-vulkan/`, so that
    `tools/realesrgan-ncnn-vulkan/realesrgan-ncnn-vulkan.exe` and its `models/`
    directory both exist.
+3. Verify your GPU can actually drive it: `python src/doctor.py --test-upscale`.
+
+Don't have a suitable GPU? Skip this entirely and render with `--no-upscale`.
 
 Finally, create `input/Script.txt` and `input/Visuals.txt` — see
 [`input/README.md`](input/README.md) for the exact format.
 
-## Quick start with Claude Code
+## Quick start (no coding required)
 
-If you have [Claude Code](https://claude.com/claude-code), you don't need to
-learn any of this. Open this folder and type:
+If you have [Claude Code](https://claude.com/claude-code), you don't need to read
+any of the rest of this. Open this folder in Claude Code and type:
 
 ```
 /make-video
 ```
 
-It checks your environment, asks four questions (topic, language/voice, length,
-visual style), writes the script and image prompts for you, renders a short
-checkpoint for your approval, then runs the full render and hands you the
-finished file. `CLAUDE.md` is loaded automatically, so Claude already knows how
-the pipeline works and how to resume it if something crashes.
+That's the only thing you ever need to type. It will:
 
-You still need ffmpeg installed — see Setup below.
+1. Check whether your computer has what it needs — and offer to install anything
+   missing, including the video engine and the optional sharpening tool
+2. Ask you a few questions (or just take your topic and decide the rest itself)
+3. Write the narration script and the image prompts
+4. Render a **45-second sample** and stop, so you can check the voice and look
+   before committing to a long render
+5. Render the whole thing (1–3 hours, runs in the background)
+6. Hand you the finished file, plus the title and thumbnail text to upload with
+
+If you'd rather get the install out of the way first, type `/setup` instead.
+
+`CLAUDE.md` is loaded automatically, so Claude already knows how this pipeline
+works, what the rate limits are, and how to resume if something crashes midway.
+
+### Who decides what
+
+You keep every creative call. Claude handles every technical one.
+
+| Decision | Who decides |
+| --- | --- |
+| Topic, angle, and hook | **You** — or say "you pick" and Claude drafts it |
+| The narration itself | **You** (paste your own), or Claude drafts and you edit |
+| Title and thumbnail text | **You** — Claude offers 2–3 options to choose from |
+| Language and how the voice should feel | **You** ("calm", "dramatic", …) |
+| Video length | **You** — Claude tells you the render time first |
+| Visual style / vibe | **You**, or take the built-in noir preset |
+| Sign-off on the 45-second sample | **You** |
+| Which actual TTS voice matches "dramatic" | Claude (verified against the real voice list) |
+| Scene count, timestamps, pacing directives | Claude |
+| Individual image prompt wording | Claude |
+| Whether to use the sharpening tool | Claude — it detects your hardware |
+| What to install, and resuming after a crash | Claude |
+
+Everything is asked **up front**, in one round, and every question comes with an
+"or you pick for me" option. If you only want to answer one thing, answer the
+topic — Claude can decide the rest.
 
 ## Usage
 

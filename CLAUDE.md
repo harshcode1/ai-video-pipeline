@@ -5,8 +5,25 @@ of image prompts, it produces a finished, loudness-normalized 1080p narrated
 video using only free keyless services plus local ffmpeg.
 
 **If the user wants to make a video, run the `/make-video` command** — it handles
-the whole interview-and-render flow. Everything below is the background context
-for working in this repo generally.
+the whole interview-and-render flow. **If their machine isn't set up yet, run
+`/setup`.** Everything below is the background context for working in this repo
+generally.
+
+## Who uses this
+
+Assume the operator is a **working YouTuber, not a programmer**, unless you learn
+otherwise. That cuts two ways:
+
+- **Creative topics — ask, don't explain.** Hooks, retention, pacing, titles,
+  thumbnails, CTR: that's their profession. Use their vocabulary and let them
+  make the call.
+- **Technical topics — plain English, and just handle it.** No tracebacks, no
+  jargon, no file paths they didn't ask for. Translate tool output; never paste
+  it. Words like "LUFS", "ffmpeg", "venv" shouldn't reach them unprompted.
+
+Technical decisions (voice IDs, upscaler tile sizes, whether to upscale, resume
+strategy) are yours. Creative decisions (angle, script, title, style, length) are
+theirs.
 
 ---
 
@@ -49,6 +66,9 @@ for working in this repo generally.
 
 ## Commands
 
+Always use the venv interpreter — `.venv\Scripts\python.exe` on Windows,
+`.venv/bin/python` elsewhere — not bare `python`, or the packages won't be found.
+
 ```bash
 python src/doctor.py                      # preflight: ffmpeg, deps, upscaler, inputs
 python src/doctor.py --test-upscale       # + one real ~45s GPU upscale test
@@ -62,6 +82,20 @@ python src/forensics.py                   # QA metrics: LUFS, F0 variation, vide
 
 Useful flags: `--label NAME` names the merged intermediates, `--out PATH`
 overrides the output location.
+
+## Installing things
+
+- ffmpeg: `winget install --id Gyan.FFmpeg -e --accept-package-agreements --accept-source-agreements`.
+  **No shell restart needed afterwards** — `ffmpeg_utils.py` scans the winget
+  install path directly, even though winget's own message says otherwise.
+- Core packages: `pip install -r requirements.txt` (small, fast, pure wheels).
+- `requirements-forensics.txt` is separate and optional — large binary wheels
+  used only by `src/forensics.py`. Don't install it as part of normal setup; a
+  failed opencv build must never block someone from making a video.
+- Real-ESRGAN: pinned to release tag **`v0.2.5.0`**, asset
+  `realesrgan-ncnn-vulkan-20220424-windows.zip`. **Do not use
+  `releases/latest`** — the newer v0.3.0 tag publishes no Windows binary, so a
+  "latest" lookup finds nothing.
 
 ## Settings worth changing
 

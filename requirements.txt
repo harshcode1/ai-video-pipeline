@@ -1,12 +1,9 @@
-# Core pipeline
+# Core pipeline -- everything needed to render a video.
+# Small, pure-python wheels: installs in seconds and can't fail on a compile.
 edge-tts==7.2.8          # TTS (free, no API key)
 requests==2.34.2         # Pollinations image fetches
 pillow==12.3.0           # upscale output validation
 watchdog==6.0.0          # src/watch.py auto-rerun on input change
 
-# Forensics / QA only (src/forensics.py) -- not needed for a plain render
-numpy==2.4.6
-librosa==0.11.0
-pyloudnorm==0.2.0
-praat-parselmouth==0.4.7
-opencv-python==5.0.0.93
+# Optional QA extras (numpy, librosa, opencv, praat) live in
+# requirements-forensics.txt -- only needed for src/forensics.py.

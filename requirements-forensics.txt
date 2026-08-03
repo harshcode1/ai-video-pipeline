@@ -1,0 +1,14 @@
+# Optional -- ONLY needed for src/forensics.py (QA metrics: loudness, pitch
+# variation, video motion). A normal render does not import any of these.
+#
+# Deliberately kept out of requirements.txt: these are large binary wheels
+# (numpy/opencv/librosa are hundreds of MB together) and are the most likely
+# thing to fail on a fresh machine. Nobody should be blocked from making a
+# video by an opencv install error.
+#
+#   pip install -r requirements-forensics.txt
+numpy==2.4.6
+librosa==0.11.0
+pyloudnorm==0.2.0
+praat-parselmouth==0.4.7
+opencv-python==5.0.0.93
