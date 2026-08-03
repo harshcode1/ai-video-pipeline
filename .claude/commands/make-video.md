@@ -68,7 +68,8 @@ expertise, not yours. Default: you draft, he edits.
 **2. Language, and how should the voice feel?**
 Ask for the language and the delivery he wants — calm and slow, dramatic,
 high-energy, conspiratorial, whatever he says. **You** then map that to a real
-voice: run `edge-tts --list-voices` and pick from it. Offer him 2–3 real options
+voice: run `.venv\Scripts\edge-tts.exe --list-voices` (bare `edge-tts` is not on
+PATH — it only exists inside the venv) and pick from it. Offer him 2–3 real options
 if he wants to choose the voice himself. **Never invent a voice name** — only use
 one that appears in that list. Default: Hindi, `hi-IN-SwaraNeural`.
 

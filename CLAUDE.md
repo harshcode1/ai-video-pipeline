@@ -102,7 +102,9 @@ overrides the output location.
 All in `src/config.py`:
 
 - `TTS_VOICE` — default `hi-IN-SwaraNeural` (Hindi). List real options with
-  `edge-tts --list-voices`. **Always verify a voice exists before using it.**
+  `.venv\Scripts\edge-tts.exe --list-voices` (the bare `edge-tts` command is not
+  on PATH — it only exists inside the venv).
+  **Always verify a voice exists before using it.**
 - `EMOTION_PROSODY` / `PAUSE_MS` — what each `[directive]` in the script does.
 - `IMAGE_SEED` — fixed across all requests on purpose; this plus an identical
   style suffix on every prompt is what makes N images look like one film.
