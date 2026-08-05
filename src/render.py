@@ -4,7 +4,11 @@ after a crash only redoes what's missing.
 Usage:
   python src/render.py --indices 1,2,5,34,65   # checkpoint / partial run
   python src/render.py --all                    # full 69-scene run
-  python src/render.py --all --no-upscale       # skip Real-ESRGAN (no GPU/binary)
+  python src/render.py --all --no-upscale       # force-skip Real-ESRGAN (usually
+                                                # unnecessary -- it auto-skips at 4K)
+
+Requires GEMINI_API_KEY for image generation -- free key from
+https://aistudio.google.com/apikey. Run src/doctor.py to verify first.
 """
 import argparse
 
@@ -13,7 +17,7 @@ import parse
 import timing
 from assemble import mux_audio, render_scene_clip, xfade_chain
 from audio import build_scene_audio
-from images import PollinationsProvider, get_image
+from images import GeminiProvider, get_image
 from loudness import normalize as normalize_loudness
 from tts import EdgeTTSProvider
 from upscale import get_upscaled_image
@@ -41,8 +45,9 @@ def run(indices: list, output_path, label: str, upscale: bool = True):
         s["measured_duration"] = timing.probe_duration(audio_path)
     timing.print_timing_table(selected, all_scenes)
 
-    print("\n--- Stage 3/5: Images (Pollinations, fixed seed, cached) ---")
-    img_provider = PollinationsProvider()
+    print(f"\n--- Stage 3/5: Images ({config.IMAGE_MODEL}, {config.IMAGE_ASPECT_RATIO} "
+          f"{config.IMAGE_SIZE}, cached) ---")
+    img_provider = GeminiProvider()
     for s in selected:
         get_image(s, img_provider)
 
@@ -52,10 +57,10 @@ def run(indices: list, output_path, label: str, upscale: bool = True):
             get_upscaled_image(s)
     else:
         # assemble.render_scene_clip() falls back to the raw build/images/NN.png
-        # when no upscaled file exists, so skipping here costs sharpness, not a
-        # broken render. This is the escape hatch for machines without the
-        # Real-ESRGAN binary or a Vulkan-capable GPU.
-        print("\n--- Stage 4/5: Upscale SKIPPED (--no-upscale) -> using raw 1024x576 sources ---")
+        # when no upscaled file exists, so skipping here is safe. Note this flag
+        # is now largely redundant: at native 4K sources get_upscaled_image()
+        # skips itself anyway, so the two paths produce identical output.
+        print("\n--- Stage 4/5: Upscale SKIPPED (--no-upscale) -> using raw sources ---")
 
     print("\n--- Stage 5/5: Assemble (ffmpeg: per-scene clip -> xfade -> mux) ---")
     clip_paths = [render_scene_clip(s) for s in selected]
@@ -87,8 +92,8 @@ def main():
     ap.add_argument("--label", type=str, default=None, help="Label for merged intermediate/output filenames")
     ap.add_argument("--out", type=str, default=None, help="Output mp4 path override")
     ap.add_argument("--no-upscale", action="store_true",
-                    help="Skip the Real-ESRGAN stage and use the raw 1024x576 images "
-                         "(softer output, but needs no GPU or binary download)")
+                    help="Force-skip the Real-ESRGAN stage. Rarely needed: at native "
+                         "4K sources the upscaler already skips itself.")
     args = ap.parse_args()
 
     if args.all:

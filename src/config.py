@@ -53,21 +53,55 @@ TTS_MAX_RETRIES = 5
 TTS_BACKOFF_BASE_SECONDS = 2.0
 
 # --- Images ---
-IMAGE_SEED = 424242  # fixed across all 69 requests for style consistency
-IMAGE_MODEL = "flux"
-IMAGE_WIDTH = 1920
-IMAGE_HEIGHT = 1080
-POLLINATIONS_MIN_INTERVAL_SECONDS = 15.0  # anonymous rate limit
+# Provider: Google Gemini image generation (free tier, key from Google AI Studio).
+#
+# WHY WE LEFT POLLINATIONS (verified live 2026-08-05, not assumed):
+#   1. It stopped being free. Every genuinely new prompt now returns
+#      402 PAYMENT_REQUIRED -- "This request costs ~0.0001 pollen, but your
+#      available balance is 0.0000." The `flux` model was removed from the
+#      anonymous model list entirely (only `sana` remains, and it bills too).
+#      Their marketing still says "Flux -- free, unlimited"; the live API
+#      disagrees. Note that previously-generated prompts still return instantly
+#      from their cache, which makes the service look alive when nothing new
+#      can be made -- don't be fooled by a passing spot-check.
+#   2. It was the real cause of the soft/blurry look. Pollinations silently
+#      capped EVERY response at 1024x576 regardless of the width/height asked
+#      for (the server echoed its own smaller size back in the response). A
+#      1080p frame needs ~2.07M pixels; 1024x576 is 0.59M. The missing ~72%
+#      was Real-ESRGAN inventing plausible detail. No sharpen/grain tuning can
+#      recover detail that was never generated -- the fix had to be a bigger
+#      source image, not a better filter.
+IMAGE_API_KEY_ENV = "GEMINI_API_KEY"
+IMAGE_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions"
+IMAGE_MODEL = "gemini-3.1-flash-image"  # supports 16:9 and up to 4K (flash-lite caps at 1K)
+IMAGE_ASPECT_RATIO = "16:9"
+# Uppercase K is required by the API ("4K", not "4k"). 4K = 3840x2160, which is
+# EXACTLY SCALE_PRE_ZOOMPAN_WIDTH below -- so the zoompan stage resamples
+# nothing, and Real-ESRGAN becomes unnecessary (upscale.py now auto-skips when
+# the source is already this big, cutting ~50 min off a full render).
+IMAGE_SIZE = "4K"
+IMAGE_MIME_TYPE = "image/png"
+# Free tier is roughly 10 requests/minute. 6s keeps us comfortably under it;
+# 429s are still handled with backoff below. This is 2.5x faster than the old
+# 15s Pollinations throttle, so image fetching also got quicker.
+IMAGE_MIN_INTERVAL_SECONDS = 6.0
 IMAGE_MAX_RETRIES = 6
 IMAGE_BACKOFF_BASE_SECONDS = 3.0
+# NOTE: the old fixed IMAGE_SEED is gone -- this API exposes no seed parameter.
+# Cross-scene style consistency now rests entirely on repeating an identical
+# style suffix on every prompt in Visuals.txt, which was always the dominant
+# factor of the two. Keep those suffixes byte-identical.
 
 # --- Video ---
 FPS = 30
 CROSSFADE_SECONDS = 1.0
-ZOOM_MAX = 1.25     # was 1.5. The source images are only 1024x576 natively, so
-                    # every extra bit of zoom crops+enlarges and MAGNIFIES their
-                    # softness. 1.25 still gives clear motion but stops the zoom
-                    # from turning mild source-blur into obvious mush.
+ZOOM_MAX = 1.25     # Was lowered from 1.5 back when sources were a soft
+                    # 1024x576 and every extra bit of zoom magnified that
+                    # softness into mush. Sources are now natively 3840x2160,
+                    # so that constraint no longer applies -- 1.5 is safe again
+                    # if more motion is wanted. Left at 1.25 because it's a
+                    # LOOK decision, not a technical one: raise it only after
+                    # eyeballing a sample, not by default.
 ZOOM_STEP = 0.0006  # calmer baseline motion (reference video measured ~2.5 mean
                     # frame-diff vs our old 3.5 at step=0.0008; this is the trade)
 
@@ -75,11 +109,15 @@ ZOOM_STEP = 0.0006  # calmer baseline motion (reference video measured ~2.5 mean
 # The whole "looks like an AI slideshow vs. a real video" gap comes down to four
 # things stacked here, each A/B-picked by eye on scenes 1 (fog) and 65 (corridor):
 #
-#   1. SHARPEN  -- the Pollinations source is a soft 1024x576 and the realesrgan
-#      *photo* model smooths painterly brushwork further, so the net reads blurry.
-#      Unsharp on the final pixels (after zoompan, so we sharpen what's actually
-#      shown, not a version the zoom will re-soften) snaps edges back. amount=1.2
-#      snaps without haloing. This is why we don't re-upscale.
+#   1. SHARPEN  -- applied to the final pixels (after zoompan, so we sharpen
+#      what's actually shown, not a version the zoom will re-soften).
+#      !! REVIEW THIS VALUE. amount=1.2 was tuned to rescue a soft, upscaled
+#      1024x576 source. Sources are now natively 3840x2160 and genuinely sharp,
+#      and the 4K->1080p downscale softens only slightly -- so some sharpening
+#      still helps, but 1.2 may now be too much and can produce visible halos
+#      on high-contrast edges. Judge it on a sample before a full run; 0.6-0.8
+#      is the likelier sweet spot at this source resolution. Left unchanged
+#      because it is a LOOK decision, not a technical one.
 #   2. EQ       -- a gentle contrast S-curve + tiny saturation lift. Flat frames
 #      are the #1 AI tell; this gives deep blacks and richer amber.
 #   3. VIGNETTE -- darkens the frame edges, pulling the eye to the subject and
@@ -93,11 +131,15 @@ VIGNETTE_FILTER = "vignette=angle=PI/4.5"
 FILM_GRAIN_FILTER = "noise=alls=6:allf=t+u"
 FINISH_FILTER = ",".join([SHARPEN_FILTER, COLOR_GRADE_FILTER, VIGNETTE_FILTER, FILM_GRAIN_FILTER])
 
-# Real-ESRGAN gives genuine 4096x2304 detail (not bicubic-interpolated), so
-# the old scale=8000 pre-zoompan upscale (needed when source was a raw
-# 1024x576 Pollinations image) would just re-blur real detail for no benefit.
-# 3840 is a mild downscale from the 4096 source -- cheap, still far more
-# working resolution than the 1920x1080 output target needs for smooth zoom.
+# The working resolution the zoompan stage operates at, before the final
+# 1920x1080 output. Sources now arrive natively at 3840x2160 (IMAGE_SIZE="4K"),
+# so this is a no-op passthrough: no upscale, no downscale, no resampling at
+# all before the zoom. Every pixel the viewer sees is real generated detail.
+#
+# It stays comfortably above the 1920x1080 target on purpose -- ZOOM_MAX crops
+# into the frame, so at full zoom we still have 3840/1.25 = 3072 real pixels
+# feeding a 1920-wide output. That headroom is why the zoom stays sharp instead
+# of turning into mush at the end of a scene.
 SCALE_PRE_ZOOMPAN_WIDTH = 3840
 
 # Per-scene zoompan motion variants (selected by scene index % 3) so all 69

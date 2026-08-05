@@ -10,6 +10,7 @@ Exits 0 if a render is possible (see the recommended command it prints),
 """
 import argparse
 import importlib
+import os
 import shutil
 import subprocess
 import sys
@@ -76,6 +77,23 @@ def check_deps():
                 report(WARN, f"import {mod}", f"optional (forensics/watch only) -- {hint}")
 
 
+def check_image_api():
+    """The image provider needs a key since Aug 2026 (Pollinations went paid --
+    see config.py). Without it a render dies at stage 3, after the TTS work."""
+    import os
+    import config
+    key = os.environ.get(config.IMAGE_API_KEY_ENV, "").strip()
+    if not key:
+        report(FAIL, "image API key",
+               f"{config.IMAGE_API_KEY_ENV} is not set. Get a free key at "
+               f"https://aistudio.google.com/apikey then run: "
+               f'setx {config.IMAGE_API_KEY_ENV} "your-key"')
+        return
+    report(PASS, "image API key", f"{config.IMAGE_API_KEY_ENV} set ({len(key)} chars)")
+    report(PASS, "image settings",
+           f"{config.IMAGE_MODEL} @ {config.IMAGE_ASPECT_RATIO} {config.IMAGE_SIZE}")
+
+
 def check_inputs():
     script = ROOT / "input" / "Script.txt"
     visuals = ROOT / "input" / "Visuals.txt"
@@ -94,7 +112,8 @@ def check_inputs():
     # non-Latin-1 script) and silently hands back stdout=None.
     proc = subprocess.run([sys.executable, str(ROOT / "src" / "parse.py")],
                           capture_output=True, text=True, cwd=str(ROOT),
-                          encoding="utf-8", errors="replace")
+                          encoding="utf-8", errors="replace",
+                          env={**os.environ, "PYTHONIOENCODING": "utf-8"})
     stdout, stderr = proc.stdout or "", proc.stderr or ""
     if proc.returncode == 0:
         scene_line = [l for l in stdout.splitlines() if "scenes ->" in l]
@@ -118,7 +137,8 @@ def check_unit_tests(ffmpeg_ok: bool):
         return
     proc = subprocess.run([sys.executable, str(ROOT / "tests" / "test_assemble.py")],
                           capture_output=True, text=True, cwd=str(ROOT),
-                          encoding="utf-8", errors="replace")
+                          encoding="utf-8", errors="replace",
+                          env={**os.environ, "PYTHONIOENCODING": "utf-8"})
     summary = [l for l in (proc.stdout or "").splitlines() if "passed" in l]
     if proc.returncode == 0:
         report(PASS, "unit tests", summary[-1].strip() if summary else "passed")
@@ -130,13 +150,13 @@ def check_upscaler(test_upscale=False):
     import config
     exe = config.REALESRGAN_EXE
     if not exe.exists():
-        report(WARN, "Real-ESRGAN binary", f"not at {exe} -- render with --no-upscale, "
-                                           "or see README 'Setup' to install it")
+        # Not a problem any more: images arrive at 3840x2160, so upscale.py
+        # auto-skips regardless of whether this binary exists.
+        report(PASS, "Real-ESRGAN binary", "absent, and not needed at 4K sources")
         return
     models = exe.parent / "models"
     if not (models / "realesrgan-x4plus.bin").exists():
-        report(WARN, "Real-ESRGAN models", f"realesrgan-x4plus.bin missing from {models} "
-                                           "-- render with --no-upscale")
+        report(PASS, "Real-ESRGAN models", "incomplete, and not needed at 4K sources")
         return
     report(PASS, "Real-ESRGAN binary", str(exe))
 
@@ -157,8 +177,8 @@ def check_upscaler(test_upscale=False):
         do_upscale(Path(sample), out)
         report(PASS, "Real-ESRGAN GPU test", f"{out.stat().st_size:,} bytes from {Path(sample).name}")
     except Exception as e:
-        report(WARN, "Real-ESRGAN GPU test", f"failed ({type(e).__name__}) -- "
-                                             f"use --no-upscale. Detail: {str(e)[:160]}")
+        report(WARN, "Real-ESRGAN GPU test", f"failed ({type(e).__name__}) -- harmless, "
+                                             f"it is skipped at 4K anyway. Detail: {str(e)[:160]}")
     finally:
         if out.exists():
             out.unlink()
@@ -194,7 +214,9 @@ def main():
     check_ffmpeg()
     print("\nPython packages")
     check_deps()
-    print("\nUpscaler (optional -- skippable with --no-upscale)")
+    print("\nImage generation")
+    check_image_api()
+    print("\nUpscaler (no longer needed -- sources are natively 4K)")
     check_upscaler(args.test_upscale)
     print("\nInputs")
     check_inputs()
@@ -217,15 +239,15 @@ def main():
             print(f"  - {label}: {detail}")
         return 1
 
-    flag = "" if upscale_ok else " --no-upscale"
-    print("\nReady to render." + ("" if upscale_ok else
-          "\nNOTE: no working upscaler found -- add --no-upscale to every render command."))
+    # No --no-upscale flag is suggested any more: sources arrive at 3840x2160
+    # and upscale.py skips itself, whether or not the binary is installed.
+    print("\nReady to render.")
     if not inputs_ok:
         print("\nNext: create input/Script.txt + input/Visuals.txt (see input/README.md),")
         print("      then re-run this check.")
     else:
-        print(f"\nCheckpoint (fast, do this first):\n  python src/render.py --indices 1,2,3{flag}")
-        print(f"\nFull run (long -- hours):\n  python src/render.py --all{flag}")
+        print("\nCheckpoint (fast, do this first):\n  python src/render.py --indices 1,2,3")
+        print("\nFull run (long -- hours):\n  python src/render.py --all")
     return 0
 
 

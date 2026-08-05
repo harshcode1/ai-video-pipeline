@@ -2,7 +2,9 @@
 
 This repo is a **script-to-video pipeline**. Given a narration script and a list
 of image prompts, it produces a finished, loudness-normalized 1080p narrated
-video using only free keyless services plus local ffmpeg.
+video using free services plus local ffmpeg. TTS is still keyless; images need
+one free Google AI Studio key in `GEMINI_API_KEY` (Pollinations went paid in
+Aug 2026 — see `src/config.py` for the full post-mortem).
 
 **If the user wants to make a video, run the `/make-video` command** — it handles
 the whole interview-and-render flow. **If their machine isn't set up yet, run
@@ -37,9 +39,9 @@ theirs.
    cleanup steps, do not "start fresh."
 3. **Never hand-edit anything in `build/` or `output/`.** All of it is generated.
    Change the inputs or `src/config.py` and re-render.
-4. **Never lower `POLLINATIONS_MIN_INTERVAL_SECONDS` and never parallelize image
-   fetches.** 15s between requests is the anonymous-tier rate limit. Exceeding
-   it gets you throttled and makes the run slower, not faster.
+4. **Never lower `IMAGE_MIN_INTERVAL_SECONDS` and never parallelize image
+   fetches.** 6s between requests keeps us under the free tier's ~10 req/min.
+   Exceeding it gets you rate-limited and makes the run slower, not faster.
 5. **`src/config.py` is the single source of truth** for paths, voice, prosody,
    and the visual finish. Change settings there, not scattered through modules.
 6. **Timestamps are the join key.** Every `[MM:SS]` in `input/Script.txt` must
@@ -60,8 +62,8 @@ theirs.
 | 0 | `parse.py` | Joins Script + Visuals on `MM:SS` → scene list. No network. | `build/scenes.json` |
 | 1 | `tts.py`, `audio.py`, `silence.py` | Per-line edge-tts voiceover, prosody from `[directives]`, real inserted silence for `[pause]`. | `build/audio/NN.mp3` |
 | 2 | `timing.py` | `ffprobe` measures true audio duration. **Scene length follows the actual voiceover, never the script's own timestamps.** | in-memory |
-| 3 | `images.py` | One Pollinations image per scene, fixed seed, 15s throttle. | `build/images/NN.png` |
-| 4 | `upscale.py` | Local Real-ESRGAN 4×. Skippable via `--no-upscale`. | `build/images_upscaled/NN.png` |
+| 3 | `images.py` | One Gemini image per scene, native 16:9 at 4K, 6s throttle. Needs `GEMINI_API_KEY`. | `build/images/NN.png` |
+| 4 | `upscale.py` | Real-ESRGAN 4×. **Auto-skips now** — 3840px sources need no upscale. | `build/images_upscaled/NN.png` |
 | 5 | `assemble.py`, `loudness.py` | Per-scene zoompan clip → finish filters → xfade chain → mux with −14 LUFS audio. | `build/scenes/NN.mp4` → `output/` |
 
 ## Commands
@@ -75,7 +77,8 @@ python src/doctor.py --test-upscale       # + one real ~45s GPU upscale test
 python src/parse.py                       # validate inputs, print the scene table (fast, no network)
 python src/render.py --indices 1,2,3      # checkpoint render -- ALWAYS do this first
 python src/render.py --all                # full run (hours)
-python src/render.py --all --no-upscale   # full run without Real-ESRGAN
+python src/render.py --all --no-upscale   # full run without Real-ESRGAN (rarely
+                                          # needed now -- it auto-skips at 4K)
 python tests/test_assemble.py             # unit tests (plain asserts, NOT pytest)
 python src/forensics.py                   # QA metrics: LUFS, F0 variation, video motion
 ```
@@ -92,10 +95,13 @@ overrides the output location.
 - `requirements-forensics.txt` is separate and optional — large binary wheels
   used only by `src/forensics.py`. Don't install it as part of normal setup; a
   failed opencv build must never block someone from making a video.
-- Real-ESRGAN: pinned to release tag **`v0.2.5.0`**, asset
+- Real-ESRGAN: **no longer needed** — images arrive at 3840×2160 and
+  `upscale.py` skips itself. Only relevant if sources ever shrink again. If you
+  do need it: release tag **`v0.2.5.0`**, asset
   `realesrgan-ncnn-vulkan-20220424-windows.zip`. **Do not use
-  `releases/latest`** — the newer v0.3.0 tag publishes no Windows binary, so a
-  "latest" lookup finds nothing.
+  `releases/latest`** — the newer v0.3.0 tag publishes no Windows binary.
+- Image API key: free at https://aistudio.google.com/apikey. Set it with
+  `setx GEMINI_API_KEY "..."` (persistent) — a new shell then picks it up.
 
 ## Settings worth changing
 
@@ -106,8 +112,12 @@ All in `src/config.py`:
   on PATH — it only exists inside the venv).
   **Always verify a voice exists before using it.**
 - `EMOTION_PROSODY` / `PAUSE_MS` — what each `[directive]` in the script does.
-- `IMAGE_SEED` — fixed across all requests on purpose; this plus an identical
-  style suffix on every prompt is what makes N images look like one film.
+- `IMAGE_MODEL` / `IMAGE_SIZE` / `IMAGE_ASPECT_RATIO` — `gemini-3.1-flash-image`
+  at 16:9 / 4K. Uppercase `K` is mandatory. `gemini-3.1-flash-lite-image` is
+  cheaper but caps at 1K — don't use it, 1K is below the output resolution.
+- **There is no image seed any more** (the API exposes none). Cross-scene style
+  consistency now rests *entirely* on repeating a byte-identical style suffix on
+  every prompt in `Visuals.txt`. Guard that harder than before.
 - `FINISH_FILTER` — the sharpen + contrast + vignette + grain chain that closes
   the "looks like an AI slideshow" gap. Read the comments before touching it;
   each value was A/B-picked by eye.
@@ -120,18 +130,22 @@ All in `src/config.py`:
 | `vkQueueSubmit failed -4` storms | GPU wedged (often a laptop lid close mid-render). `upscale.py` already retries by stepping the **tile size down**, which is the actual fix — more sleeping won't help. If it fails at tile=32, reset the driver (Win+Ctrl+Shift+B) or reboot, then rerun. All completed work is cached. |
 | `Timestamp sets DO NOT match` | A `[MM:SS]` exists in one input file but not the other. The error lists exactly which. |
 | `Scene N has no spoken text` | That line is only `[directives]` with no words left after stripping. Add narration text. |
-| Image fetch fails repeatedly | Pollinations has no SLA and flakes. Backoff is already built in. If it's down, wait — do not remove the throttle. |
+| `No image API key found` | `GEMINI_API_KEY` isn't set. Free key at https://aistudio.google.com/apikey, then `setx GEMINI_API_KEY "..."`. `doctor.py` checks this before a render wastes the TTS stage. |
+| Image API returns 401/403 | Bad or revoked key. Fails fast on purpose rather than retrying 6×. |
+| Image fetch fails repeatedly | Backoff is already built in. If it's a 429 you're over the free tier's rate — wait, do not remove the throttle. |
+| Anything suggesting Pollinations | **Retired Aug 2026 — it went paid and only ever returned 1024×576.** It still serves *cached* old prompts, so a spot-check can look like it works while every new prompt 402s. Do not wire it back in. |
 | `suspiciously small audio output` | edge-tts hiccup; retries handle it automatically. |
 | Unit tests won't even import | They need ffmpeg installed, because `assemble.py` imports `ffmpeg_utils` at module level. |
 
 ## How long things take
 
-Dominated by two rate-limited stages, for a ~69-scene / ~18-minute video:
+For a ~69-scene / ~18-minute video:
 
-- Images: 69 × 15s enforced throttle ≈ **17 min minimum**
-- Upscaling: ~46s per image measured on an Intel Arc iGPU ≈ **~53 min**
-- TTS, scene clips, the 69-input xfade chain, and mux: **additional, roughly
-  comparable** — the xfade chain is one heavy ffmpeg process
+- Images: 69 × 6s enforced throttle ≈ **7 min minimum** (was 17 min at 15s)
+- Upscaling: **gone** — was ~53 min, now auto-skipped at 4K sources
+- TTS, scene clips, the 69-input xfade chain, and mux: **the bulk of the time
+  now** — the xfade chain is one heavy ffmpeg process
 
-Budget **1.5–3 hours** for a full run and background it. A 3-scene checkpoint is
+Budget **1–2 hours** for a full run and background it. The switch to native 4K
+sources cut roughly an hour off what this used to take. A 3-scene checkpoint is
 only a few minutes, which is exactly why you render one first.

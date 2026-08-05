@@ -2,11 +2,15 @@
 no PyTorch/CUDA dependency, runs on any Vulkan-capable GPU including Intel
 integrated/Arc). Zero-cost, no API, no account.
 
-Pollinations' anonymous tier silently caps every image at 1024x576
-regardless of requested width/height (verified empirically: 4 different
-width/height combos and 5 model names all returned identical 1024x576).
-Naively bicubic-upscaling that to 1080p is a real source of softness.
-Real-ESRGAN reconstructs plausible detail instead of just blurring pixels.
+LARGELY HISTORICAL as of Aug 2026: this existed because Pollinations silently
+capped every image at 1024x576 regardless of requested width/height, and
+bicubic-upscaling that to 1080p was the real source of the soft look --
+Real-ESRGAN reconstructed plausible detail instead of just blurring pixels.
+
+Images now generate natively at 3840x2160, so get_upscaled_image() detects
+that the source already meets the working resolution and returns it untouched.
+The code below is kept intact and working for the case where a future provider
+returns something smaller again.
 """
 import random
 import subprocess
@@ -107,11 +111,33 @@ def upscale(in_path: Path, out_path: Path) -> Path:
     )
 
 
+def _source_width(path: Path) -> int | None:
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            return im.size[0]
+    except Exception:
+        return None
+
+
 def get_upscaled_image(scene: dict) -> Path:
     raw_path = config.ROOT / scene["image_file"]
     out_path = config.IMAGES_UPSCALED_DIR / f"{scene['index']:02d}.png"
     if _is_valid_output(out_path):
         print(f"  [UPSCALE] scene {scene['index']:02d} ({scene['timestamp']}) cached, skipping")
         return out_path
-    print(f"  [UPSCALE] scene {scene['index']:02d} ({scene['timestamp']}) 1024x576 -> 4x")
+
+    # Images now arrive natively at 3840x2160, which already meets the working
+    # resolution the zoompan stage runs at -- upscaling further would cost ~46s
+    # per image to add nothing but resampling softness. Only the old 1024x576
+    # sources ever needed Real-ESRGAN. assemble.render_scene_clip() falls back
+    # to the raw image when no upscaled file exists, so returning the raw path
+    # here is all that's required.
+    width = _source_width(raw_path)
+    if width is not None and width >= config.SCALE_PRE_ZOOMPAN_WIDTH:
+        print(f"  [UPSCALE] scene {scene['index']:02d} ({scene['timestamp']}) "
+              f"source already {width}px wide -- no upscale needed")
+        return raw_path
+
+    print(f"  [UPSCALE] scene {scene['index']:02d} ({scene['timestamp']}) {width or '?'}px -> 4x")
     return upscale(raw_path, out_path)

@@ -57,35 +57,44 @@ Use `.venv\Scripts\python.exe` for **every** command from here on — never bare
 Skip `requirements-forensics.txt` unless they ask for quality metrics. Those are
 large and only power an optional diagnostic.
 
-## Step 3 — Offer the sharpness upgrade (their choice)
+## Step 3 — The image key (required, free, ~2 minutes)
 
-This one is genuinely their call, so ask — with the tradeoff in plain English,
-no jargon:
+This is the one step only they can do — it needs their Google login. Without it
+the pipeline cannot make pictures at all, so don't treat it as optional.
 
-> One optional extra: a tool that makes the images noticeably sharper. It's a
-> 45 MB download and works best if your PC has a decent graphics card. Without
-> it your videos still come out fine, just a little softer. Want it?
+Explain it in one plain sentence and give them the exact steps:
 
-If **yes**, download and extract it:
+> Last thing, and I can't do this one for you because it needs your Google
+> login. The picture service needs a free key — it takes about two minutes:
+>
+> 1. Go to https://aistudio.google.com/apikey
+> 2. Sign in with any Google account
+> 3. Click **Create API key**
+> 4. Copy it and paste it here
+>
+> It's free, there's no credit card, and the free allowance is far more than
+> you'll ever use for videos.
+
+When they paste it, store it permanently for them:
 
 ```powershell
-Invoke-WebRequest -Uri "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip" -OutFile "$env:TEMP\resrgan.zip"
-Expand-Archive -Path "$env:TEMP\resrgan.zip" -DestinationPath "tools\realesrgan-ncnn-vulkan" -Force
-Remove-Item "$env:TEMP\resrgan.zip"
+setx GEMINI_API_KEY "the-key-they-pasted"
+$env:GEMINI_API_KEY = "the-key-they-pasted"
 ```
 
-The tag `v0.2.5.0` is pinned deliberately — **do not use `releases/latest`**,
-because the newer v0.3.0 tag ships no Windows binary at all.
+Set **both** — `setx` persists it for future sessions but does not affect the
+current one, so the second line is what makes it work right now.
 
-Afterwards confirm `tools/realesrgan-ncnn-vulkan/realesrgan-ncnn-vulkan.exe`
-and `tools/realesrgan-ncnn-vulkan/models/realesrgan-x4plus.bin` both exist. If
-the zip nested them one folder deeper, move them up so those exact paths work.
+**Treat the key as a secret.** Never echo it back, never write it into a file in
+the repo, never put it in a commit.
 
-Then verify their graphics card can actually use it:
-`.venv\Scripts\python.exe src\doctor.py --test-upscale` (takes ~45s). If it
-fails, that's fine — say so plainly and note you'll make videos without it.
+Then confirm it works by generating one real test image before declaring
+success. If the key is rejected, say plainly that the key didn't take and walk
+them through creating a fresh one.
 
-If **no**, just note that renders will use `--no-upscale`.
+**Do not install Real-ESRGAN.** The old "sharpness upgrade" step is obsolete —
+pictures now arrive at full 4K, so that tool would add nothing but ~50 minutes
+per video. If they already have it installed, it simply gets skipped.
 
 ## Step 4 — Confirm and hand off
 

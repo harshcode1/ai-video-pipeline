@@ -142,7 +142,21 @@ def build_scenes():
     return meta, scenes
 
 
+def _force_utf8_stdout():
+    """Windows consoles default to a legacy codepage (cp1252), and this script
+    echoes the narration back -- so any non-Latin-1 script (Devanagari, CJK,
+    Cyrillic, even a stray curly quote) raises UnicodeEncodeError and takes the
+    whole command down. Reconfigure to UTF-8, and degrade to '?' rather than
+    crashing on anything the terminal font still can't render."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError):
+            pass  # already fine, or redirected somewhere that doesn't support it
+
+
 def main():
+    _force_utf8_stdout()
     meta, scenes = build_scenes()
 
     config.SCENES_JSON.write_text(

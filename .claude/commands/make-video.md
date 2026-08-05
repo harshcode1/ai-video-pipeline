@@ -40,9 +40,12 @@ there's no `.venv` yet).
   `.claude/commands/setup.md`, asking permission once in plain English first.
   Something like: "Quick thing — a couple of tools aren't installed yet. Want me
   to set them up? Takes a minute or two."
-- Note whether a working upscaler exists. If not, add `--no-upscale` to every
-  render command below. **Never ask him about this** — it's a hardware fact you
-  just measured, not a preference.
+- **If `GEMINI_API_KEY` is missing, that's a hard stop** — no key, no pictures.
+  Walk him through Step 3 of `setup.md` (2 minutes, free, needs his Google
+  login). It's the only step you genuinely cannot do for him. Never print the
+  key back to him and never write it into a file.
+- Ignore the upscaler entirely. Images arrive at 4K and it auto-skips, so
+  `--no-upscale` is no longer something you need to reason about.
 
 ## Step 1 — Offer the shortcut first
 
@@ -76,7 +79,7 @@ one that appears in that list. Default: Hindi, `hi-IN-SwaraNeural`.
 **3. How long?**
 His call — he knows his own retention curve. Convert to scenes at ~4 per minute
 (~15s of narration each). Tell him the honest render time before he commits: a
-10-minute video is roughly 1–2 hours of rendering, ~18 minutes is 2–3 hours.
+10-minute video is roughly 40–60 minutes of rendering, ~18 minutes is 1–2 hours.
 
 **4. What should it look like?**
 Ask for the visual vibe. Default preset: dark symbolic expressionist
@@ -102,10 +105,11 @@ Read `input/README.md` for the exact format, then write `input/Script.txt` and
   video, not on every line, or the effect flattens out. `[pause]` goes on its
   **own line sharing the same timestamp** as the line it precedes.
 - Every scene needs real words left after directives are stripped.
-- One `IMAGE:` prompt per scene in `Visuals.txt`, and **append the identical
-  style suffix to every single prompt.** That plus the fixed seed is the only
-  reason 60+ images look like one film instead of a slideshow. End each with
-  `no text, 16:9`.
+- One `IMAGE:` prompt per scene in `Visuals.txt`, and **append a byte-identical
+  style suffix to every single prompt.** This is now the *only* thing keeping
+  60+ images looking like one film instead of a slideshow — the image API
+  exposes no seed, so the suffix carries all of it. Copy-paste it; never retype
+  or reword it per scene. End each with `no text, 16:9`.
 - Prompts should be symbolic and concrete — an object, a space, a light source —
   not literal illustrations of the sentence. Never put words inside an image.
 

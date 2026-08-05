@@ -2,9 +2,21 @@
 
 A reproducible, resumable pipeline that turns a **timestamped narration script**
 plus a list of **image prompts** into a finished, loudness-normalized 1080p
-narrated video — using only free, keyless services and local ffmpeg.
+narrated video — using free services and local ffmpeg.
 
-No paid APIs, no accounts, no API keys anywhere in this repo.
+No paid APIs. TTS is keyless; image generation needs one **free** Google AI
+Studio key (no credit card) in `GEMINI_API_KEY`.
+
+> **Aug 2026 — image provider changed.** Pollinations, the previous keyless
+> provider, moved to prepaid credits: new prompts now fail with
+> `402 PAYMENT_REQUIRED` at a zero balance, and `flux` was dropped from the
+> anonymous model list. It also silently capped every image at 1024×576
+> regardless of the size requested — which was the real cause of the soft,
+> blurry output, since a 1080p frame needs ~3.5× that many pixels. Both problems
+> are fixed by the switch: images now generate natively at **16:9 4K
+> (3840×2160)**, so nothing is invented and nothing is resampled. Real-ESRGAN is
+> no longer needed, which also cut ~50 minutes off a full render. Full
+> post-mortem in `src/config.py`.
 
 ```
 input/Script.txt    ─┐
@@ -18,8 +30,8 @@ input/Visuals.txt   ─┴─▶ parse ─▶ TTS ─▶ timing ─▶ images �
 | 0. Parse | `src/parse.py` | Joins `Script.txt` + `Visuals.txt` on `MM:SS` timestamps into `build/scenes.json`. Validates that both timestamp sets match exactly. No network. |
 | 1. TTS | `src/tts.py`, `src/audio.py` | Per-line Hindi TTS via **edge-tts** (`hi-IN-SwaraNeural`), with per-line prosody from the script's `[directives]` and real inserted silence for `[pause]`. Retries with exponential backoff. |
 | 2. Timing | `src/timing.py` | Measures true audio duration with `ffprobe` — scene length follows the *actual* voiceover, not the nominal script timestamps. |
-| 3. Images | `src/images.py` | One image per scene from **Pollinations** (`flux`), with a fixed seed across every request for style consistency, rate-limited to the anonymous tier and cached on disk. |
-| 4. Upscale | `src/upscale.py` | Local, offline 4× super-resolution via **Real-ESRGAN** (ncnn-vulkan — no PyTorch/CUDA, any Vulkan GPU). Pollinations' free tier silently caps output at 1024×576, so this reconstructs real detail instead of bicubic-blurring it. |
+| 3. Images | `src/images.py` | One image per scene from **Google Gemini** (`gemini-3.1-flash-image`), generated natively at 16:9 / 4K, throttled to the free tier and cached on disk. Style consistency comes from an identical style suffix on every prompt. |
+| 4. Upscale | `src/upscale.py` | **Auto-skips.** Local Real-ESRGAN 4× is kept for the case where sources are smaller than the working resolution, but at 3840×2160 there is nothing to gain, so it returns the original untouched. |
 | 5. Assemble | `src/assemble.py` | Per-scene `zoompan` motion clip → a cinematic finish filter chain → `xfade` crossfade chain → mux with two-pass EBU R128 loudness-normalized audio (`src/loudness.py`, target −14 LUFS). |
 
 **Every stage is idempotent and cached.** Reruns after a crash only redo what's
@@ -33,12 +45,19 @@ summarized away — the interesting ones:
 - **`src/config.py`** — the "looks like an AI slideshow vs. a real video" gap
   closed by four stacked filters on the *final* frame (sharpen, contrast/sat
   S-curve, vignette, temporal film grain), each A/B-picked by eye, plus
-  per-scene zoom/pan variants so 69 clips aren't mechanically identical.
+  per-scene zoom/pan variants so 69 clips aren't mechanically identical. Also
+  carries the post-mortem on why the image provider changed.
+- **`src/images.py`** — the REST response shape for the image endpoint is
+  undocumented (Google's samples only show the SDK accessor), so rather than
+  hard-coding a guessed JSON path the provider *walks* the response for the
+  first plausible base64 blob. Survives the shape differing from the docs or
+  changing later. Auth failures fail fast instead of burning six slow retries.
 - **`src/upscale.py`** — `vkQueueSubmit failed -4` (`VK_ERROR_DEVICE_LOST`)
   storms on a shared-memory Intel Arc iGPU traced to Real-ESRGAN's automatic
   tile sizing, with measurements. Retries step the **tile size down** rather
   than sleeping longer, and outputs are grid-validated so partially-dead GPU
-  buffers get caught instead of averaging past a whole-image check.
+  buffers get caught instead of averaging past a whole-image check. Mostly
+  historical now that upscaling auto-skips.
 
 ## Setup
 
@@ -58,19 +77,30 @@ build can't block you from making a video.
 ffmpeg on Windows: `winget install --id Gyan.FFmpeg -e`. No shell restart needed
 — `ffmpeg_utils.py` scans the winget install path directly.
 
-Then add the Real-ESRGAN binary, which is a large third-party download and is
-therefore **not committed**:
+Then add a free image API key — this is required, the pipeline can't generate
+pictures without it:
 
-1. Download
-   [`realesrgan-ncnn-vulkan-20220424-windows.zip`](https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip)
-   (~45 MB). Note the tag is **v0.2.5.0** — the newer v0.3.0 release publishes no
-   Windows binary, so don't go looking at "latest".
-2. Extract it to `tools/realesrgan-ncnn-vulkan/`, so that
-   `tools/realesrgan-ncnn-vulkan/realesrgan-ncnn-vulkan.exe` and its `models/`
-   directory both exist.
-3. Verify your GPU can actually drive it: `python src/doctor.py --test-upscale`.
+1. Create one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
+   (any Google account, no credit card).
+2. Set it persistently:
 
-Don't have a suitable GPU? Skip this entirely and render with `--no-upscale`.
+   ```powershell
+   setx GEMINI_API_KEY "your-key-here"      # future shells
+   $env:GEMINI_API_KEY = "your-key-here"    # and the current one
+   ```
+
+   On Unix: `export GEMINI_API_KEY=your-key-here`.
+
+The free allowance is on the order of hundreds of images per day — a 69-scene
+video uses 69. `python src/doctor.py` verifies the key is visible before you
+start a long render.
+
+**Real-ESRGAN is no longer required.** Sources arrive at 3840×2160 and
+`upscale.py` skips itself. The binary and its
+[v0.2.5.0 download](https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip)
+remain supported for the case where sources are ever smaller than the working
+resolution — extract to `tools/realesrgan-ncnn-vulkan/` if you need it. (Don't
+use "latest": the v0.3.0 tag ships no Windows binary.)
 
 Finally, create `input/Script.txt` and `input/Visuals.txt` — see
 [`input/README.md`](input/README.md) for the exact format.
@@ -87,7 +117,7 @@ any of the rest of this. Open this folder in Claude Code and type:
 That's the only thing you ever need to type. It will:
 
 1. Check whether your computer has what it needs — and offer to install anything
-   missing, including the video engine and the optional sharpening tool
+   missing, including the video engine and the free image key
 2. Ask you a few questions (or just take your topic and decide the rest itself)
 3. Write the narration script and the image prompts
 4. Render a **45-second sample** and stop, so you can check the voice and look
@@ -116,8 +146,8 @@ You keep every creative call. Claude handles every technical one.
 | Which actual TTS voice matches "dramatic" | Claude (verified against the real voice list) |
 | Scene count, timestamps, pacing directives | Claude |
 | Individual image prompt wording | Claude |
-| Whether to use the sharpening tool | Claude — it detects your hardware |
 | What to install, and resuming after a crash | Claude |
+| Creating the free image API key | **You** — it needs your Google login (2 min, one time) |
 
 Everything is asked **up front**, in one round, and every question comes with an
 "or you pick for me" option. If you only want to answer one thing, answer the
@@ -152,8 +182,9 @@ resumes rather than starting over. Don't delete `build/` to "clean up"; that's
 the resume cache, and throwing it away costs hours of re-downloading and
 re-upscaling.
 
-A full ~69-scene run takes **1.5–3 hours**, dominated by the 15s-per-image
-Pollinations throttle (~17 min) and Real-ESRGAN upscaling (~46s per image).
+A full ~69-scene run takes **1–2 hours**. It used to be 1.5–3: dropping the
+15s-per-image throttle to 6s saved ~10 min, and eliminating Real-ESRGAN
+(~46s per image) saved ~50 min more.
 
 Two extra tools:
 
