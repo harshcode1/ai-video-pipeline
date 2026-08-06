@@ -2,21 +2,34 @@
 
 A reproducible, resumable pipeline that turns a **timestamped narration script**
 plus a list of **image prompts** into a finished, loudness-normalized 1080p
-narrated video — using free services and local ffmpeg.
+narrated video — using local ffmpeg plus one paid image API.
 
-No paid APIs. TTS is keyless; image generation needs one **free** Google AI
-Studio key (no credit card) in `GEMINI_API_KEY`.
+Voiceover is free and keyless. **Image generation is not free**: it needs a
+Google AI Studio key in `GEMINI_API_KEY` on a project with **billing enabled**,
+and costs about **$0.15 per image — roughly $10 for a 69-scene video**.
 
-> **Aug 2026 — image provider changed.** Pollinations, the previous keyless
-> provider, moved to prepaid credits: new prompts now fail with
-> `402 PAYMENT_REQUIRED` at a zero balance, and `flux` was dropped from the
-> anonymous model list. It also silently capped every image at 1024×576
-> regardless of the size requested — which was the real cause of the soft,
-> blurry output, since a 1080p frame needs ~3.5× that many pixels. Both problems
-> are fixed by the switch: images now generate natively at **16:9 4K
-> (3840×2160)**, so nothing is invented and nothing is resampled. Real-ESRGAN is
-> no longer needed, which also cut ~50 minutes off a full render. Full
-> post-mortem in `src/config.py`.
+> **Aug 2026 — free image generation ended, twice.**
+>
+> First, Pollinations (the previous keyless provider) moved to prepaid credits:
+> new prompts fail with `402 PAYMENT_REQUIRED` at a zero balance, and `flux` was
+> dropped from the anonymous model list. It had also silently capped every image
+> at 1024×576 regardless of the size requested — the real cause of the soft,
+> blurry output, since a 1080p frame needs ~3.5× that many pixels.
+>
+> The switch to Google Gemini fixed the quality problem for good: images now
+> generate natively at **16:9 4K (3840×2160)**, so nothing is invented and
+> nothing is resampled. Real-ESRGAN became unnecessary, cutting ~50 minutes off
+> a full render.
+>
+> But Google's free image tier disappeared in the same month. Its pricing page
+> now lists **"Free Tier: not available" for every image model** —
+> `gemini-3.1-flash-image`, `-flash-lite-image`, `gemini-3-pro-image`,
+> `gemini-2.5-flash-image` and Imagen 4 alike. A valid key on an unbilled
+> project isn't broken; it simply has a quota of exactly zero, and no amount of
+> retrying changes that. Billing is now a hard requirement. Google's $300
+> new-account credit covers roughly 28 full videos.
+>
+> Full post-mortem and the cost-per-resolution table are in `src/config.py`.
 
 ```
 input/Script.txt    ─┐
@@ -30,7 +43,7 @@ input/Visuals.txt   ─┴─▶ parse ─▶ TTS ─▶ timing ─▶ images �
 | 0. Parse | `src/parse.py` | Joins `Script.txt` + `Visuals.txt` on `MM:SS` timestamps into `build/scenes.json`. Validates that both timestamp sets match exactly. No network. |
 | 1. TTS | `src/tts.py`, `src/audio.py` | Per-line Hindi TTS via **edge-tts** (`hi-IN-SwaraNeural`), with per-line prosody from the script's `[directives]` and real inserted silence for `[pause]`. Retries with exponential backoff. |
 | 2. Timing | `src/timing.py` | Measures true audio duration with `ffprobe` — scene length follows the *actual* voiceover, not the nominal script timestamps. |
-| 3. Images | `src/images.py` | One image per scene from **Google Gemini** (`gemini-3.1-flash-image`), generated natively at 16:9 / 4K, throttled to the free tier and cached on disk. Style consistency comes from an identical style suffix on every prompt. |
+| 3. Images | `src/images.py` | One image per scene from **Google Gemini** (`gemini-3.1-flash-image`), generated natively at 16:9 / 4K, throttled to 1 per 6s and cached on disk. Classifies API failures so deterministic ones (bad key, zero quota, rejected request) fail immediately with the reason instead of burning six retries. Style consistency comes from an identical style suffix on every prompt. |
 | 4. Upscale | `src/upscale.py` | **Auto-skips.** Local Real-ESRGAN 4× is kept for the case where sources are smaller than the working resolution, but at 3840×2160 there is nothing to gain, so it returns the original untouched. |
 | 5. Assemble | `src/assemble.py` | Per-scene `zoompan` motion clip → a cinematic finish filter chain → `xfade` crossfade chain → mux with two-pass EBU R128 loudness-normalized audio (`src/loudness.py`, target −14 LUFS). |
 
@@ -77,12 +90,15 @@ build can't block you from making a video.
 ffmpeg on Windows: `winget install --id Gyan.FFmpeg -e`. No shell restart needed
 — `ffmpeg_utils.py` scans the winget install path directly.
 
-Then add a free image API key — this is required, the pipeline can't generate
-pictures without it:
+Then add an image API key — required, the pipeline can't generate pictures
+without it:
 
-1. Create one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
-   (any Google account, no credit card).
-2. Set it persistently:
+1. Create one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
+2. **Enable billing on the Google Cloud project that key belongs to.** This is
+   not optional any more: image generation has no free tier, so a key on an
+   unbilled project returns a quota of exactly zero for every request. New
+   Google Cloud accounts get $300 of credit, which covers ~28 full videos.
+3. Set the key persistently:
 
    ```powershell
    setx GEMINI_API_KEY "your-key-here"      # future shells
@@ -91,9 +107,10 @@ pictures without it:
 
    On Unix: `export GEMINI_API_KEY=your-key-here`.
 
-The free allowance is on the order of hundreds of images per day — a 69-scene
-video uses 69. `python src/doctor.py` verifies the key is visible before you
-start a long render.
+A 69-scene video costs about **$10** at the default 4K, or ~$7 at 2K.
+`python src/doctor.py` verifies the key is visible before you start a long
+render — but it cannot check billing without spending a real request, so if
+images fail with a zero-quota error, billing is the thing to check first.
 
 **Real-ESRGAN is no longer required.** Sources arrive at 3840×2160 and
 `upscale.py` skips itself. The binary and its
@@ -117,7 +134,7 @@ any of the rest of this. Open this folder in Claude Code and type:
 That's the only thing you ever need to type. It will:
 
 1. Check whether your computer has what it needs — and offer to install anything
-   missing, including the video engine and the free image key
+   missing, including the video engine and the image API key
 2. Ask you a few questions (or just take your topic and decide the rest itself)
 3. Write the narration script and the image prompts
 4. Render a **45-second sample** and stop, so you can check the voice and look
@@ -147,7 +164,7 @@ You keep every creative call. Claude handles every technical one.
 | Scene count, timestamps, pacing directives | Claude |
 | Individual image prompt wording | Claude |
 | What to install, and resuming after a crash | Claude |
-| Creating the free image API key | **You** — it needs your Google login (2 min, one time) |
+| Creating the image API key **and enabling billing on it** | **You** — it needs your Google login and card (~5 min, one time) |
 
 Everything is asked **up front**, in one round, and every question comes with an
 "or you pick for me" option. If you only want to answer one thing, answer the
@@ -203,10 +220,19 @@ whether the video actually reads as moving (mean inter-frame difference), so
 Plain asserts, no pytest dependency:
 
 ```bash
-python tests/test_assemble.py
+python tests/test_assemble.py   # xfade offset math (needs ffmpeg installed)
+python tests/test_images.py     # image-API error classification (no network, no ffmpeg)
 ```
 
-Covers `compute_offsets()` — the xfade offset math, where a silent bug would
+`test_images.py` covers the failure classifier, and every case in it is a bug
+that actually shipped: a bad key arrives as HTTP **400** (not 401/403) and used
+to be retried six times under the wrong label; a rejected `mime_type` had its
+explanation discarded by `raise_for_status()`; and a zero quota was treated as a
+transient rate-limit and slept through. Each one costs minutes of a multi-hour
+render and names the wrong cause, so the classifier is tested against real
+recorded response bodies rather than trusted.
+
+`test_assemble.py` covers `compute_offsets()` — the xfade offset math, where a silent bug would
 cascade through every join in the render.
 
 ## Repository layout

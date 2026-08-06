@@ -56,7 +56,7 @@ def run(indices: list, output_path, label: str, upscale: bool = True):
         for s in selected:
             get_upscaled_image(s)
     else:
-        # assemble.render_scene_clip() falls back to the raw build/images/NN.png
+        # assemble.render_scene_clip() falls back to the raw build/images/NN.*
         # when no upscaled file exists, so skipping here is safe. Note this flag
         # is now largely redundant: at native 4K sources get_upscaled_image()
         # skips itself anyway, so the two paths produce identical output.

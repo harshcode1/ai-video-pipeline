@@ -2,9 +2,12 @@
 
 This repo is a **script-to-video pipeline**. Given a narration script and a list
 of image prompts, it produces a finished, loudness-normalized 1080p narrated
-video using free services plus local ffmpeg. TTS is still keyless; images need
-one free Google AI Studio key in `GEMINI_API_KEY` (Pollinations went paid in
-Aug 2026 — see `src/config.py` for the full post-mortem).
+video using local ffmpeg. TTS is still free and keyless. **Images are not free
+any more** — they need a Google AI Studio key in `GEMINI_API_KEY` on a project
+with **billing enabled**, and cost roughly $0.15 each (~$10 for a 69-scene
+video). Every image provider we've used went paid during 2026: Pollinations in
+August, and Google's free image tier disappeared the same month. See
+`src/config.py` for the full post-mortem and the cost-per-resolution table.
 
 **If the user wants to make a video, run the `/make-video` command** — it handles
 the whole interview-and-render flow. **If their machine isn't set up yet, run
@@ -40,8 +43,10 @@ theirs.
 3. **Never hand-edit anything in `build/` or `output/`.** All of it is generated.
    Change the inputs or `src/config.py` and re-render.
 4. **Never lower `IMAGE_MIN_INTERVAL_SECONDS` and never parallelize image
-   fetches.** 6s between requests keeps us under the free tier's ~10 req/min.
-   Exceeding it gets you rate-limited and makes the run slower, not faster.
+   fetches.** 6s between requests keeps 429s rare and costs nothing meaningful
+   against a multi-hour render. Exceeding the rate gets you throttled and makes
+   the run slower, not faster. Images also cost real money now — a parallel
+   fetch storm that fails halfway still bills for what it generated.
 5. **`src/config.py` is the single source of truth** for paths, voice, prosody,
    and the visual finish. Change settings there, not scattered through modules.
 6. **Timestamps are the join key.** Every `[MM:SS]` in `input/Script.txt` must
@@ -62,7 +67,7 @@ theirs.
 | 0 | `parse.py` | Joins Script + Visuals on `MM:SS` → scene list. No network. | `build/scenes.json` |
 | 1 | `tts.py`, `audio.py`, `silence.py` | Per-line edge-tts voiceover, prosody from `[directives]`, real inserted silence for `[pause]`. | `build/audio/NN.mp3` |
 | 2 | `timing.py` | `ffprobe` measures true audio duration. **Scene length follows the actual voiceover, never the script's own timestamps.** | in-memory |
-| 3 | `images.py` | One Gemini image per scene, native 16:9 at 4K, 6s throttle. Needs `GEMINI_API_KEY`. | `build/images/NN.png` |
+| 3 | `images.py` | One Gemini image per scene, native 16:9 at 4K, 6s throttle. Needs `GEMINI_API_KEY` **+ billing**. | `build/images/NN.jpg` |
 | 4 | `upscale.py` | Real-ESRGAN 4×. **Auto-skips now** — 3840px sources need no upscale. | `build/images_upscaled/NN.png` |
 | 5 | `assemble.py`, `loudness.py` | Per-scene zoompan clip → finish filters → xfade chain → mux with −14 LUFS audio. | `build/scenes/NN.mp4` → `output/` |
 
@@ -79,7 +84,8 @@ python src/render.py --indices 1,2,3      # checkpoint render -- ALWAYS do this 
 python src/render.py --all                # full run (hours)
 python src/render.py --all --no-upscale   # full run without Real-ESRGAN (rarely
                                           # needed now -- it auto-skips at 4K)
-python tests/test_assemble.py             # unit tests (plain asserts, NOT pytest)
+python tests/test_assemble.py             # unit tests: xfade math (plain asserts, NOT pytest)
+python tests/test_images.py               # unit tests: image-API error classification (no network)
 python src/forensics.py                   # QA metrics: LUFS, F0 variation, video motion
 ```
 
@@ -100,8 +106,12 @@ overrides the output location.
   do need it: release tag **`v0.2.5.0`**, asset
   `realesrgan-ncnn-vulkan-20220424-windows.zip`. **Do not use
   `releases/latest`** — the newer v0.3.0 tag publishes no Windows binary.
-- Image API key: free at https://aistudio.google.com/apikey. Set it with
+- Image API key: https://aistudio.google.com/apikey. Set it with
   `setx GEMINI_API_KEY "..."` (persistent) — a new shell then picks it up.
+  **A key by itself is not enough**: as of Aug 2026 every Gemini image model
+  lists "Free Tier: not available", so the key's Google Cloud project must have
+  billing enabled or every request comes back with a quota of exactly zero.
+  Google's $300 new-account credit covers roughly 28 full videos.
 
 ## Settings worth changing
 
@@ -113,8 +123,16 @@ All in `src/config.py`:
   **Always verify a voice exists before using it.**
 - `EMOTION_PROSODY` / `PAUSE_MS` — what each `[directive]` in the script does.
 - `IMAGE_MODEL` / `IMAGE_SIZE` / `IMAGE_ASPECT_RATIO` — `gemini-3.1-flash-image`
-  at 16:9 / 4K. Uppercase `K` is mandatory. `gemini-3.1-flash-lite-image` is
-  cheaper but caps at 1K — don't use it, 1K is below the output resolution.
+  at 16:9 / 4K. Uppercase `K` is mandatory. This is the main **cost** lever:
+  4K is $0.151/image, 2K $0.101, 1K $0.067. Don't drop to 1K — at 16:9 that's
+  1024×576, *below* the 1080p output, which is exactly the trap that made the
+  old Pollinations images look blurry. 2K (2048×1152) is a legitimate saving if
+  you also lower `ZOOM_MAX`, since at 1.25 zoom it crops to 1638px feeding a
+  1920px frame. `gemini-3.1-flash-lite-image` is cheaper still but caps at 1K —
+  same reason, don't.
+- `IMAGE_MIME_TYPES` — a tuple, deliberately. Google's docs say both `image/jpeg`
+  and `image/png` are accepted; a live run got a 400 for png. `images.py` starts
+  with the first and auto-falls-back to the second, so leave it as a tuple.
 - **There is no image seed any more** (the API exposes none). Cross-scene style
   consistency now rests *entirely* on repeating a byte-identical style suffix on
   every prompt in `Visuals.txt`. Guard that harder than before.
@@ -130,12 +148,15 @@ All in `src/config.py`:
 | `vkQueueSubmit failed -4` storms | GPU wedged (often a laptop lid close mid-render). `upscale.py` already retries by stepping the **tile size down**, which is the actual fix — more sleeping won't help. If it fails at tile=32, reset the driver (Win+Ctrl+Shift+B) or reboot, then rerun. All completed work is cached. |
 | `Timestamp sets DO NOT match` | A `[MM:SS]` exists in one input file but not the other. The error lists exactly which. |
 | `Scene N has no spoken text` | That line is only `[directives]` with no words left after stripping. Add narration text. |
-| `No image API key found` | `GEMINI_API_KEY` isn't set. Free key at https://aistudio.google.com/apikey, then `setx GEMINI_API_KEY "..."`. `doctor.py` checks this before a render wastes the TTS stage. |
-| Image API returns 401/403 | Bad or revoked key. Fails fast on purpose rather than retrying 6×. |
-| Image fetch fails repeatedly | Backoff is already built in. If it's a 429 you're over the free tier's rate — wait, do not remove the throttle. |
+| `No image API key found` | `GEMINI_API_KEY` isn't set. Key at https://aistudio.google.com/apikey, then `setx GEMINI_API_KEY "..."`. `doctor.py` checks this before a render wastes the TTS stage. |
+| `quota for ... is zero` (`ImageQuotaError`) | **The most likely failure now.** The key is fine; its project has no billing, and image generation has no free tier since Aug 2026. Enable billing on the key's Google Cloud project. Retrying/waiting can never fix it, which is why it fails fast instead of backing off 6×. |
+| `rejected the key ... as invalid` | Bad or revoked key. Note this arrives as **HTTP 400**, not 401/403 — Google returns `INVALID_ARGUMENT`/`API_KEY_INVALID` for a bad key. Classified by `reason`, not status code, so don't "fix" it by only checking 401/403. |
+| `rejected the request (HTTP 400, will not retry)` | Malformed request — the message quotes the field and its allowed values. Deterministic, so it fails immediately instead of burning 6 retries and discarding the explanation. |
+| Image API rejects `mime_type` | Handled automatically: `images.py` retries once with the other entry in `config.IMAGE_MIME_TYPES`. The docs list both jpeg and png as valid but the live API has disagreed, so don't collapse that tuple to one value. |
+| Image fetch fails repeatedly | Backoff is already built in. A genuine 429 rate-limit is retried; a zero-quota 429 is not (see above). Do not remove the throttle. |
 | Anything suggesting Pollinations | **Retired Aug 2026 — it went paid and only ever returned 1024×576.** It still serves *cached* old prompts, so a spot-check can look like it works while every new prompt 402s. Do not wire it back in. |
 | `suspiciously small audio output` | edge-tts hiccup; retries handle it automatically. |
-| Unit tests won't even import | They need ffmpeg installed, because `assemble.py` imports `ffmpeg_utils` at module level. |
+| Unit tests won't even import | Only `test_assemble.py` needs ffmpeg, because `assemble.py` imports `ffmpeg_utils` at module level. `test_images.py` stubs the network and runs anywhere. |
 
 ## How long things take
 

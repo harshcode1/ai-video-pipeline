@@ -71,6 +71,23 @@ TTS_BACKOFF_BASE_SECONDS = 2.0
 #      was Real-ESRGAN inventing plausible detail. No sharpen/grain tuning can
 #      recover detail that was never generated -- the fix had to be a bigger
 #      source image, not a better filter.
+# !! IMAGE GENERATION IS NO LONGER FREE ANYWHERE. Verified Aug 2026 against
+# Google's own pricing page: EVERY image model -- gemini-3.1-flash-image,
+# gemini-3.1-flash-lite-image, gemini-3-pro-image, gemini-2.5-flash-image and
+# Imagen 4 -- lists "Free Tier: not available". A valid API key on a
+# non-billed account is not broken; it simply has a quota of exactly zero, and
+# no amount of waiting or retrying changes that. Billing must be enabled on the
+# Google Cloud project behind the key. Google's $300 new-account credit covers
+# roughly 28 full videos at the settings below.
+#
+# Cost per image at 16:9 (standard, non-batch):
+#     1K  $0.067   -> 1024x576, BELOW our 1080p output. Never use it: this is
+#                    exactly the resolution that made Pollinations look blurry.
+#     2K  $0.101   -> 2048x1152. Above 1080p, but at ZOOM_MAX=1.25 the crop
+#                    leaves only 1638px feeding a 1920px frame, so the end of
+#                    each zoom softens slightly.
+#     4K  $0.151   -> 3840x2160. Full headroom at any zoom. This is the default.
+# A 69-scene video therefore costs about $10.42 at 4K, or $6.97 at 2K.
 IMAGE_API_KEY_ENV = "GEMINI_API_KEY"
 IMAGE_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions"
 IMAGE_MODEL = "gemini-3.1-flash-image"  # supports 16:9 and up to 4K (flash-lite caps at 1K)
@@ -80,10 +97,22 @@ IMAGE_ASPECT_RATIO = "16:9"
 # nothing, and Real-ESRGAN becomes unnecessary (upscale.py now auto-skips when
 # the source is already this big, cutting ~50 min off a full render).
 IMAGE_SIZE = "4K"
-IMAGE_MIME_TYPE = "image/png"
-# Free tier is roughly 10 requests/minute. 6s keeps us comfortably under it;
-# 429s are still handled with backoff below. This is 2.5x faster than the old
-# 15s Pollinations throttle, so image fetching also got quicker.
+# Tried in order; the first is the default. JPEG is first because Google's own
+# REST example for this endpoint uses "image/jpeg", and a live run reported a
+# 400 invalid_request when sending "image/png" -- even though the prose docs
+# list both as accepted. Since the docs and the live API disagree and the
+# disagreement can only be observed with a valid key, images.py starts with
+# JPEG and automatically falls back to the other entry if the API rejects the
+# mime type. Do not collapse this back to a single string.
+IMAGE_MIME_TYPES = ("image/jpeg", "image/png")
+IMAGE_MIME_TYPE = IMAGE_MIME_TYPES[0]
+# Extension for build/images/NN.<ext>, derived so the filename doesn't lie
+# about its contents. If the runtime mime fallback above kicks in, the bytes
+# are still written to this path -- every downstream consumer (PIL, ffmpeg,
+# Real-ESRGAN) identifies the format from the file's magic bytes, not its name.
+IMAGE_FILE_EXT = ".jpg" if IMAGE_MIME_TYPE == "image/jpeg" else ".png"
+# Paid-tier limit is far higher than the old free 10 req/min, but 6s costs
+# nothing meaningful against a multi-hour render and keeps 429s rare.
 IMAGE_MIN_INTERVAL_SECONDS = 6.0
 IMAGE_MAX_RETRIES = 6
 IMAGE_BACKOFF_BASE_SECONDS = 3.0

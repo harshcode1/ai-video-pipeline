@@ -57,23 +57,37 @@ Use `.venv\Scripts\python.exe` for **every** command from here on — never bare
 Skip `requirements-forensics.txt` unless they ask for quality metrics. Those are
 large and only power an optional diagnostic.
 
-## Step 3 — The image key (required, free, ~2 minutes)
+## Step 3 — The image key (required, costs money, ~5 minutes)
 
-This is the one step only they can do — it needs their Google login. Without it
-the pipeline cannot make pictures at all, so don't treat it as optional.
+This is the one step only they can do — it needs their Google login and card.
+Without it the pipeline cannot make pictures at all, so don't treat it as
+optional.
 
-Explain it in one plain sentence and give them the exact steps:
+**Lead with the cost. Do not bury it or discover it later.** As of Aug 2026
+there is no free image generation from Google — every image model lists "Free
+Tier: not available". A key on a project without billing is not broken; it just
+returns a quota of zero forever. Someone who was told "it's free" and then hits
+that will reasonably think the tool is broken.
 
-> Last thing, and I can't do this one for you because it needs your Google
-> login. The picture service needs a free key — it takes about two minutes:
+> Last thing, and I can't do this one for you — it needs your Google login.
+>
+> Straight answer on cost first: the picture service isn't free any more.
+> Google started charging for image generation in August. It works out to about
+> **$10 for a full video** (roughly 15 cents per picture). New Google accounts
+> get $300 of free credit, which is around 28 videos, so you'll likely not pay
+> anything for a long while.
 >
 > 1. Go to https://aistudio.google.com/apikey
 > 2. Sign in with any Google account
 > 3. Click **Create API key**
-> 4. Copy it and paste it here
->
-> It's free, there's no credit card, and the free allowance is far more than
-> you'll ever use for videos.
+> 4. Turn on billing for that key's project — Google will prompt you, and this
+>    is the part that catches people out; without it every picture fails
+> 5. Copy the key and paste it here
+
+If they'd rather not enable billing, say so plainly rather than pretending
+there's a workaround: the script and voiceover stages still run for free, but
+no images means no video. Don't invent a free provider — the last two both went
+paid, and a spot-check of a cached result can look like it still works.
 
 When they paste it, store it permanently for them:
 
@@ -88,9 +102,19 @@ current one, so the second line is what makes it work right now.
 **Treat the key as a secret.** Never echo it back, never write it into a file in
 the repo, never put it in a commit.
 
-Then confirm it works by generating one real test image before declaring
-success. If the key is rejected, say plainly that the key didn't take and walk
-them through creating a fresh one.
+Then confirm it works by generating **one real test image** before declaring
+success — a key that looks fine and a key that can actually generate are two
+different things, and only a real request tells them apart.
+
+Read the failure back in plain English:
+
+- **"quota is zero" / `ImageQuotaError`** — the key is fine, billing isn't on.
+  This is by far the most common one. Send them back to step 4 above.
+- **"rejected the key as invalid"** — the key itself didn't take (often a paste
+  error, or `setx` set it but this window predates it). Note this arrives as an
+  HTTP 400, not a 401, so don't describe it as a permissions problem.
+- **"rejected the request"** — a settings problem in `config.py`, not anything
+  they did. Fix it yourself; don't make them read the message.
 
 **Do not install Real-ESRGAN.** The old "sharpness upgrade" step is obsolete —
 pictures now arrive at full 4K, so that tool would add nothing but ~50 minutes

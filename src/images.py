@@ -9,6 +9,7 @@ import abc
 import base64
 import os
 import random
+import re
 import time
 from pathlib import Path
 from urllib.parse import quote
@@ -26,6 +27,67 @@ class ImageProvider(abc.ABC):
 
 class MissingAPIKeyError(RuntimeError):
     """Raised with a human-readable fix, not a stack trace, when no key is set."""
+
+
+class ImageRequestRejectedError(RuntimeError):
+    """A malformed request (HTTP 400). Deterministic -- retrying cannot help.
+
+    Bypasses the retry loop for the same reason MissingAPIKeyError does: six
+    identical failures separated by exponential backoff is ~3 wasted minutes
+    and buries the one line of response body that explains the problem.
+    """
+
+
+class ImageQuotaError(RuntimeError):
+    """HTTP 429 where the quota for this model is structurally ZERO rather
+    than temporarily used up -- i.e. the account has no billing enabled and
+    image generation has no free tier (see the note in config.py).
+
+    Distinct from an ordinary rate-limit 429, which IS transient and is still
+    retried. Waiting never clears this one, so surface the billing fix instead
+    of sleeping through six attempts.
+    """
+
+
+class _SwitchedMimeType(Exception):
+    """Internal signal, not a failure: the API rejected the mime type and we
+    have another to try. Retried immediately, without consuming an attempt or
+    sleeping, since the next request is a different request."""
+
+
+def _error_details(resp) -> tuple[str, str, str]:
+    """Pull (status, reason, message) out of a Google API error body.
+
+    Two shapes have to be handled. This endpoint returns its errors wrapped in
+    a single-element JSON ARRAY -- verified live -- while the rest of the API
+    returns a bare object. Naive `payload["error"]` works on one and raises on
+    the other, so normalize both before reading.
+    """
+    try:
+        payload = resp.json()
+    except Exception:
+        return "", "", resp.text[:300]
+    if isinstance(payload, list):
+        payload = payload[0] if payload else {}
+    err = payload.get("error", {}) if isinstance(payload, dict) else {}
+    if not isinstance(err, dict):
+        return "", "", resp.text[:300]
+    reason = ""
+    for detail in err.get("details") or []:
+        if isinstance(detail, dict) and detail.get("reason"):
+            reason = detail["reason"]
+            break
+    return err.get("status", ""), reason, err.get("message", "") or resp.text[:300]
+
+
+def _is_zero_quota(resp) -> bool:
+    """True when a 429 means "this account may never call this model" rather
+    than "slow down". A QuotaFailure violation reports the limit it hit, and an
+    account with no billing reports that limit as exactly 0."""
+    compact = re.sub(r"\s+", "", resp.text.lower())
+    if '"quotavalue":"0"' in compact or '"quota_limit_value":"0"' in compact:
+        return True
+    return "freetier" in compact or "billing" in compact
 
 
 def _extract_image_bytes(payload) -> bytes | None:
@@ -77,43 +139,104 @@ class GeminiProvider(ImageProvider):
                 f"  PowerShell (permanent):     setx {config.IMAGE_API_KEY_ENV} \"your-key\""
             )
         self._last_request_time = 0.0
+        self.mime_type = config.IMAGE_MIME_TYPE
+        self._tried_mime_types = {self.mime_type}
 
     def _throttle(self):
         wait = config.IMAGE_MIN_INTERVAL_SECONDS - (time.time() - self._last_request_time)
         if wait > 0:
             time.sleep(wait)
 
+    def _switch_mime_type(self) -> bool:
+        """Move to the next candidate mime type. Returns False once exhausted."""
+        alt = next((m for m in config.IMAGE_MIME_TYPES if m not in self._tried_mime_types), None)
+        if alt is None:
+            return False
+        print(f"    Image API rejected mime_type={self.mime_type!r}; retrying as {alt!r}")
+        self.mime_type = alt
+        self._tried_mime_types.add(alt)
+        return True
+
+    def _check_response(self, resp) -> None:
+        """Classify a non-200 into fail-fast vs. worth-retrying.
+
+        The distinction matters a lot here: a render is a multi-hour job, and
+        six exponential-backoff retries of a deterministic failure both waste
+        three minutes and discard the response body that says what to fix.
+        """
+        if resp.status_code == 200:
+            return
+
+        status, reason, message = _error_details(resp)
+        low = message.lower()
+
+        # VERIFIED LIVE: this endpoint answers a bad key with 400
+        # INVALID_ARGUMENT / API_KEY_INVALID, NOT 401 or 403. Checking only for
+        # 401/403 (as this code used to) meant the single most common setup
+        # mistake fell through to the generic retry path and was reported as an
+        # unexplained failure six attempts later.
+        if reason == "API_KEY_INVALID" or "api key not valid" in low:
+            raise MissingAPIKeyError(
+                f"The image API rejected the key in {config.IMAGE_API_KEY_ENV} as invalid. "
+                f"Get a fresh one at https://aistudio.google.com/apikey then run: "
+                f'setx {config.IMAGE_API_KEY_ENV} "your-key" (and open a NEW terminal). '
+                f"Detail: {message[:200]}"
+            )
+        if resp.status_code in (401, 403):
+            raise MissingAPIKeyError(
+                f"Image API rejected the key (HTTP {resp.status_code}). Check that "
+                f"{config.IMAGE_API_KEY_ENV} holds a valid key from "
+                f"https://aistudio.google.com/apikey -- detail: {message[:300]}"
+            )
+
+        if resp.status_code == 429:
+            if _is_zero_quota(resp):
+                raise ImageQuotaError(
+                    f"This account's quota for {config.IMAGE_MODEL} is zero, so waiting will "
+                    f"not help. Image generation has no free tier as of Aug 2026 -- billing "
+                    f"must be enabled on the Google Cloud project behind the key "
+                    f"(https://aistudio.google.com/apikey -> the key's project -> enable "
+                    f"billing). New accounts get $300 of credit, ~28 videos' worth. "
+                    f"Detail: {message[:200]}"
+                )
+            raise RuntimeError(f"HTTP 429 rate limited: {message[:200]}")
+
+        if resp.status_code == 400:
+            # A 400 is deterministic: it will fail identically all six times.
+            # raise_for_status() would also throw away the body explaining why
+            # -- which is how the image/png vs image/jpeg mime mismatch stayed
+            # invisible for a full retry cycle.
+            if "mime" in low and self._switch_mime_type():
+                raise _SwitchedMimeType()
+            raise ImageRequestRejectedError(
+                f"Image API rejected the request (HTTP 400, will not retry). "
+                f"status={status or '?'} reason={reason or '?'} -- {message[:400]}"
+            )
+
+        raise RuntimeError(f"HTTP {resp.status_code}: {message[:300]}")
+
     def fetch(self, prompt: str, out_path: Path) -> None:
-        body = {
-            "model": config.IMAGE_MODEL,
-            "input": [{"type": "text", "text": prompt}],
-            "response_format": {
-                "type": "image",
-                "mime_type": config.IMAGE_MIME_TYPE,
-                "aspect_ratio": config.IMAGE_ASPECT_RATIO,
-                "image_size": config.IMAGE_SIZE,
-            },
-        }
         headers = {"x-goog-api-key": self.api_key, "Content-Type": "application/json"}
 
         last_err = None
-        for attempt in range(1, config.IMAGE_MAX_RETRIES + 1):
+        attempt = 0
+        while attempt < config.IMAGE_MAX_RETRIES:
+            attempt += 1
+            body = {
+                "model": config.IMAGE_MODEL,
+                "input": [{"type": "text", "text": prompt}],
+                "response_format": {
+                    "type": "image",
+                    "mime_type": self.mime_type,
+                    "aspect_ratio": config.IMAGE_ASPECT_RATIO,
+                    "image_size": config.IMAGE_SIZE,
+                },
+            }
             self._throttle()
             self._last_request_time = time.time()
             try:
                 resp = requests.post(config.IMAGE_ENDPOINT, json=body, headers=headers, timeout=300)
-
-                # A bad/unauthorized key will never fix itself -- fail fast with
-                # an actionable message instead of burning six slow retries.
-                if resp.status_code in (401, 403):
-                    raise MissingAPIKeyError(
-                        f"Image API rejected the key (HTTP {resp.status_code}). Check that "
-                        f"{config.IMAGE_API_KEY_ENV} holds a valid key from "
-                        f"https://aistudio.google.com/apikey -- detail: {resp.text[:300]}"
-                    )
-                if resp.status_code == 429 or resp.status_code >= 500:
-                    raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:300]}")
-                resp.raise_for_status()
+                self._check_response(resp)
 
                 data = _extract_image_bytes(resp.json())
                 if not data or len(data) < 5000:
@@ -123,7 +246,12 @@ class GeminiProvider(ImageProvider):
                     )
                 out_path.write_bytes(data)
                 return
-            except MissingAPIKeyError:
+            except _SwitchedMimeType:
+                # Not a failure and not the same request -- retry at once and
+                # don't spend one of the allotted attempts on it.
+                attempt -= 1
+                continue
+            except (MissingAPIKeyError, ImageRequestRejectedError, ImageQuotaError):
                 raise
             except Exception as e:
                 last_err = e
@@ -187,9 +315,19 @@ class CloudflareWorkersAIProvider(ImageProvider):
 
 def get_image(scene: dict, provider: ImageProvider) -> Path:
     out_path = config.ROOT / scene["image_file"]
-    if out_path.exists() and out_path.stat().st_size > 0:
-        print(f"  [IMG] scene {scene['index']:02d} ({scene['timestamp']}) cached, skipping")
-        return out_path
+
+    # Accept ANY extension for the cached file, not just the configured one.
+    # The image format is a config value that has already changed once (png ->
+    # jpeg), and a rendered image is expensive -- matching only the current
+    # extension would silently re-buy every image in the video after a settings
+    # change. Downstream stages read scene["image_file"], so point it at
+    # whatever was actually found.
+    for candidate in sorted(out_path.parent.glob(f"{scene['index']:02d}.*")):
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            scene["image_file"] = candidate.relative_to(config.ROOT).as_posix()
+            print(f"  [IMG] scene {scene['index']:02d} ({scene['timestamp']}) cached, skipping")
+            return candidate
+
     print(f"  [IMG] scene {scene['index']:02d} ({scene['timestamp']})")
     provider.fetch(scene["image_prompt"], out_path)
     return out_path

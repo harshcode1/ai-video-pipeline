@@ -85,13 +85,24 @@ def check_image_api():
     key = os.environ.get(config.IMAGE_API_KEY_ENV, "").strip()
     if not key:
         report(FAIL, "image API key",
-               f"{config.IMAGE_API_KEY_ENV} is not set. Get a free key at "
-               f"https://aistudio.google.com/apikey then run: "
-               f'setx {config.IMAGE_API_KEY_ENV} "your-key"')
+               f"{config.IMAGE_API_KEY_ENV} is not set. Create a key at "
+               f"https://aistudio.google.com/apikey (billing must be enabled on its "
+               f"project -- image generation has no free tier since Aug 2026), then "
+               f'run: setx {config.IMAGE_API_KEY_ENV} "your-key"')
         return
     report(PASS, "image API key", f"{config.IMAGE_API_KEY_ENV} set ({len(key)} chars)")
     report(PASS, "image settings",
            f"{config.IMAGE_MODEL} @ {config.IMAGE_ASPECT_RATIO} {config.IMAGE_SIZE}")
+    # A valid key is NOT sufficient any more, and this is the failure people
+    # actually hit. Image generation has no free tier as of Aug 2026, so an
+    # unbilled project returns a zero quota. We can't detect that without
+    # spending a real request, so say it plainly rather than let a render get
+    # two stages in and die.
+    report(WARN, "image billing",
+           "a key alone is not enough -- image generation has no free tier since "
+           "Aug 2026. If the key's Google Cloud project has no billing enabled, "
+           "every image fails with a zero quota. Est. cost at these settings: "
+           "~$0.15/image (~$10 for a 69-scene video).")
 
 
 def check_inputs():
@@ -126,24 +137,33 @@ def check_inputs():
         report(FAIL, "parse.py", tail[-1] if tail else "failed")
 
 
-def check_unit_tests(ffmpeg_ok: bool):
-    """The xfade offset math is the one piece where a silent bug corrupts every
-    join in the render, so prove it before spending hours on a full run."""
-    if not ffmpeg_ok:
-        # The tests are pure math, but they import assemble, which imports
-        # ffmpeg_utils at module level -- so they cannot even load without
-        # ffmpeg present. Report honestly as skipped rather than as a failure.
-        report(WARN, "unit tests", "skipped -- cannot import assemble.py without ffmpeg installed")
-        return
-    proc = subprocess.run([sys.executable, str(ROOT / "tests" / "test_assemble.py")],
+def _run_test_file(name: str, label: str):
+    proc = subprocess.run([sys.executable, str(ROOT / "tests" / name)],
                           capture_output=True, text=True, cwd=str(ROOT),
                           encoding="utf-8", errors="replace",
                           env={**os.environ, "PYTHONIOENCODING": "utf-8"})
     summary = [l for l in (proc.stdout or "").splitlines() if "passed" in l]
-    if proc.returncode == 0:
-        report(PASS, "unit tests", summary[-1].strip() if summary else "passed")
-    else:
-        report(FAIL, "unit tests", summary[-1].strip() if summary else "failed")
+    detail = summary[-1].strip() if summary else ("passed" if proc.returncode == 0 else "failed")
+    report(PASS if proc.returncode == 0 else FAIL, label, detail)
+
+
+def check_unit_tests(ffmpeg_ok: bool):
+    """Two things worth proving before spending hours on a full run: the xfade
+    offset math (a silent bug there corrupts every join in the video), and the
+    image-API error classification (a misclassified failure wastes minutes per
+    scene and reports the wrong cause)."""
+    # The image tests stub out the network and never import assemble, so they
+    # run with or without ffmpeg.
+    _run_test_file("test_images.py", "unit tests (images)")
+
+    if not ffmpeg_ok:
+        # These are pure math, but they import assemble, which imports
+        # ffmpeg_utils at module level -- so they cannot even load without
+        # ffmpeg present. Report honestly as skipped rather than as a failure.
+        report(WARN, "unit tests (assemble)",
+               "skipped -- cannot import assemble.py without ffmpeg installed")
+        return
+    _run_test_file("test_assemble.py", "unit tests (assemble)")
 
 
 def check_upscaler(test_upscale=False):
@@ -165,8 +185,10 @@ def check_upscaler(test_upscale=False):
                                              "the GPU actually completes an image (~45s)")
         return
 
-    sample = next(iter(sorted((ROOT / "build" / "images").glob("*.png"))), None) \
-        or exe.parent / "input.jpg"
+    # Any extension: sources are JPEG now, and were PNG before (see config.py).
+    sample = next((p for p in sorted((ROOT / "build" / "images").iterdir())
+                   if p.is_file()), None) if (ROOT / "build" / "images").exists() else None
+    sample = sample or exe.parent / "input.jpg"
     if not Path(sample).exists():
         report(WARN, "Real-ESRGAN GPU test", "no sample image available to test with")
         return

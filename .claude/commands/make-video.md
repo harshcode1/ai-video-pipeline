@@ -41,9 +41,16 @@ there's no `.venv` yet).
   Something like: "Quick thing — a couple of tools aren't installed yet. Want me
   to set them up? Takes a minute or two."
 - **If `GEMINI_API_KEY` is missing, that's a hard stop** — no key, no pictures.
-  Walk him through Step 3 of `setup.md` (2 minutes, free, needs his Google
-  login). It's the only step you genuinely cannot do for him. Never print the
-  key back to him and never write it into a file.
+  Walk him through Step 3 of `setup.md` (~5 minutes, needs his Google login and
+  billing enabled). It's the only step you genuinely cannot do for him. Never
+  print the key back to him and never write it into a file.
+- **Images cost real money now** — about $0.15 each, so ~$10 for a 69-scene
+  video. Tell him the estimated cost for *his* scene count before starting a
+  full run, once, in one sentence. He's spending his own money; he gets to
+  decide. Don't re-raise it on every render.
+- **If images fail with a zero-quota error**, billing isn't enabled on the key's
+  project. Say that directly — it is not a broken key, not a rate limit, and not
+  something waiting will fix.
 - Ignore the upscaler entirely. Images arrive at 4K and it auto-skips, so
   `--no-upscale` is no longer something you need to reason about.
 
