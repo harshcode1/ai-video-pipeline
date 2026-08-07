@@ -5,8 +5,12 @@ plus a list of **image prompts** into a finished, loudness-normalized 1080p
 narrated video — using local ffmpeg plus one paid image API.
 
 Voiceover is free and keyless. **Image generation is not free**: it needs a
-Google AI Studio key in `GEMINI_API_KEY` on a project with **billing enabled**,
-and costs about **$0.15 per image — roughly $10 for a 69-scene video**.
+funded [fal.ai](https://fal.ai) account with the key in `FAL_KEY`, and costs
+about **$0.019 per image — roughly $1.30 for a 69-scene video**.
+
+The image provider is **pluggable** (`IMAGE_PROVIDER` in `src/config.py`).
+Two providers died under this pipeline in a single month, so switching is a
+one-line change rather than a rewrite.
 
 > **Aug 2026 — free image generation ended, twice.**
 >
@@ -16,20 +20,31 @@ and costs about **$0.15 per image — roughly $10 for a 69-scene video**.
 > at 1024×576 regardless of the size requested — the real cause of the soft,
 > blurry output, since a 1080p frame needs ~3.5× that many pixels.
 >
-> The switch to Google Gemini fixed the quality problem for good: images now
-> generate natively at **16:9 4K (3840×2160)**, so nothing is invented and
-> nothing is resampled. Real-ESRGAN became unnecessary, cutting ~50 minutes off
-> a full render.
+> The switch to Google Gemini fixed the quality problem for good: images
+> generated natively at **16:9 4K (3840×2160)**, so nothing was invented and
+> nothing resampled. Real-ESRGAN became unnecessary, cutting ~50 minutes off a
+> full render.
 >
 > But Google's free image tier disappeared in the same month. Its pricing page
 > now lists **"Free Tier: not available" for every image model** —
 > `gemini-3.1-flash-image`, `-flash-lite-image`, `gemini-3-pro-image`,
 > `gemini-2.5-flash-image` and Imagen 4 alike. A valid key on an unbilled
 > project isn't broken; it simply has a quota of exactly zero, and no amount of
-> retrying changes that. Billing is now a hard requirement. Google's $300
-> new-account credit covers roughly 28 full videos.
+> retrying changes that.
 >
-> Full post-mortem and the cost-per-resolution table are in `src/config.py`.
+> **So the default moved to FLUX.2 Turbo on fal.ai**, which wins on two counts:
+> it's ~8× cheaper ($1.30 vs $10.42 per video), and it exposes a **seed**.
+> That seed matters beyond price — one fixed seed holds a single visual style
+> across all 69 scenes, which is the consistency lever that was lost when
+> Pollinations died and Google turned out to offer no equivalent.
+>
+> A full survey (Aug 2026) found **no provider offering a recurring free tier
+> that also delivers native 16:9 at 1080p or above.** The free options either
+> cap below 1080p (Cloudflare flux-schnell, SiliconFlow, ModelScope) or allow
+> roughly one usable image per day (Cloudflare lucid-origin). That's a settled
+> answer, not a gap in the search.
+>
+> Full post-mortem in `src/config.py`.
 
 ```
 input/Script.txt    ─┐
@@ -43,8 +58,8 @@ input/Visuals.txt   ─┴─▶ parse ─▶ TTS ─▶ timing ─▶ images �
 | 0. Parse | `src/parse.py` | Joins `Script.txt` + `Visuals.txt` on `MM:SS` timestamps into `build/scenes.json`. Validates that both timestamp sets match exactly. No network. |
 | 1. TTS | `src/tts.py`, `src/audio.py` | Per-line Hindi TTS via **edge-tts** (`hi-IN-SwaraNeural`), with per-line prosody from the script's `[directives]` and real inserted silence for `[pause]`. Retries with exponential backoff. |
 | 2. Timing | `src/timing.py` | Measures true audio duration with `ffprobe` — scene length follows the *actual* voiceover, not the nominal script timestamps. |
-| 3. Images | `src/images.py` | One image per scene from **Google Gemini** (`gemini-3.1-flash-image`), generated natively at 16:9 / 4K, throttled to 1 per 6s and cached on disk. Classifies API failures so deterministic ones (bad key, zero quota, rejected request) fail immediately with the reason instead of burning six retries. Style consistency comes from an identical style suffix on every prompt. |
-| 4. Upscale | `src/upscale.py` | **Auto-skips.** Local Real-ESRGAN 4× is kept for the case where sources are smaller than the working resolution, but at 3840×2160 there is nothing to gain, so it returns the original untouched. |
+| 3. Images | `src/images.py` | One image per scene from the provider set in `IMAGE_PROVIDER` — by default **FLUX.2 Turbo on fal.ai** at 2048×1152 (true 16:9, above the 1080p output), throttled to 1 per 6s and cached on disk. Classifies API failures so deterministic ones (bad key, no credit, rejected request) fail immediately with the reason instead of burning six retries. Style consistency comes from a **fixed seed** plus an identical style suffix on every prompt. |
+| 4. Upscale | `src/upscale.py` | **Auto-skips.** Local Real-ESRGAN 4× is kept for the case where sources are smaller than the working resolution, but 2048×1152 already meets it, so it returns the original untouched. |
 | 5. Assemble | `src/assemble.py` | Per-scene `zoompan` motion clip → a cinematic finish filter chain → `xfade` crossfade chain → mux with two-pass EBU R128 loudness-normalized audio (`src/loudness.py`, target −14 LUFS). |
 
 **Every stage is idempotent and cached.** Reruns after a crash only redo what's
@@ -60,11 +75,14 @@ summarized away — the interesting ones:
   S-curve, vignette, temporal film grain), each A/B-picked by eye, plus
   per-scene zoom/pan variants so 69 clips aren't mechanically identical. Also
   carries the post-mortem on why the image provider changed.
-- **`src/images.py`** — the REST response shape for the image endpoint is
-  undocumented (Google's samples only show the SDK accessor), so rather than
-  hard-coding a guessed JSON path the provider *walks* the response for the
-  first plausible base64 blob. Survives the shape differing from the docs or
-  changing later. Auth failures fail fast instead of burning six slow retries.
+- **`src/images.py`** — failures are *classified* rather than blanket-retried.
+  A render is a multi-hour unattended job, so retrying a deterministic failure
+  six times both wastes minutes and buries the reason: bad key, no credit and
+  rejected-request all stop immediately with the response body intact, while
+  rate limits and 5xx still back off. Also over-abstracted on purpose — two
+  providers died in one month, so the swap cost matters more here than anywhere
+  else. Gemini's undocumented response shape is handled by *walking* the JSON
+  for the first plausible base64 blob rather than hard-coding a guessed path.
 - **`src/upscale.py`** — `vkQueueSubmit failed -4` (`VK_ERROR_DEVICE_LOST`)
   storms on a shared-memory Intel Arc iGPU traced to Real-ESRGAN's automatic
   tile sizing, with measurements. Retries step the **tile size down** rather
@@ -93,27 +111,36 @@ ffmpeg on Windows: `winget install --id Gyan.FFmpeg -e`. No shell restart needed
 Then add an image API key — required, the pipeline can't generate pictures
 without it:
 
-1. Create one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
-2. **Enable billing on the Google Cloud project that key belongs to.** This is
-   not optional any more: image generation has no free tier, so a key on an
-   unbilled project returns a quota of exactly zero for every request. New
-   Google Cloud accounts get $300 of credit, which covers ~28 full videos.
+1. Create one at [fal.ai/dashboard/keys](https://fal.ai/dashboard/keys).
+2. **Add credit to the account.** Not optional: no provider has a free tier any
+   more, so an unfunded account fails on every image. A 69-scene video costs
+   about **$1.30**, so a small top-up lasts many videos.
 3. Set the key persistently:
 
    ```powershell
-   setx GEMINI_API_KEY "your-key-here"      # future shells
-   $env:GEMINI_API_KEY = "your-key-here"    # and the current one
+   setx FAL_KEY "your-key-here"      # future shells
+   $env:FAL_KEY = "your-key-here"    # and the current one
    ```
 
-   On Unix: `export GEMINI_API_KEY=your-key-here`.
+   On Unix: `export FAL_KEY=your-key-here`.
 
-A 69-scene video costs about **$10** at the default 4K, or ~$7 at 2K.
 `python src/doctor.py` verifies the key is visible before you start a long
-render — but it cannot check billing without spending a real request, so if
-images fail with a zero-quota error, billing is the thing to check first.
+render — but it cannot check your balance without spending a real request, so
+if images fail with a "no remaining balance" error, top-up is the fix.
 
-**Real-ESRGAN is no longer required.** Sources arrive at 3840×2160 and
-`upscale.py` skips itself. The binary and its
+<details><summary>Using Google Gemini instead</summary>
+
+Set `IMAGE_PROVIDER = "gemini"` in `src/config.py`, put a key from
+[aistudio.google.com/apikey](https://aistudio.google.com/apikey) in
+`GEMINI_API_KEY`, and enable billing on that key's Google Cloud project. Also
+raise `SCALE_PRE_ZOOMPAN_WIDTH` to 3840 to match 4K output. Costs $6.97–$10.42
+per video and offers no seed, so it's kept as a fallback and quality benchmark
+rather than the default.
+
+</details>
+
+**Real-ESRGAN is no longer required.** Sources already meet the working
+resolution and `upscale.py` skips itself. The binary and its
 [v0.2.5.0 download](https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip)
 remain supported for the case where sources are ever smaller than the working
 resolution — extract to `tools/realesrgan-ncnn-vulkan/` if you need it. (Don't

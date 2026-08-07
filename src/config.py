@@ -53,7 +53,25 @@ TTS_MAX_RETRIES = 5
 TTS_BACKOFF_BASE_SECONDS = 2.0
 
 # --- Images ---
-# Provider: Google Gemini image generation (free tier, key from Google AI Studio).
+# Provider is PLUGGABLE. Two providers have now died under us in the same month
+# (Pollinations went paid, Google removed its free image tier), so switching is
+# a one-line change here rather than a rewrite. Valid values: "fal", "gemini".
+#
+#   fal     -- DEFAULT. Black Forest Labs FLUX.2 Turbo hosted on fal.ai.
+#              ~$0.019 per 2048x1152 image => ~$1.30 for a 69-scene video.
+#              Supports a SEED, which is why it wins on more than price: a fixed
+#              seed holds one visual style across all 69 scenes. Google exposes
+#              no seed at all, so style consistency there rests entirely on
+#              repeating identical prompt wording, which is a weaker lever.
+#   gemini  -- Kept working as a fallback and as a quality benchmark. ~5-8x the
+#              cost ($6.97/video at 2K, $10.42 at 4K) and no seed.
+#
+# NOTHING IS FREE ANY MORE. Researched exhaustively Aug 2026: no provider offers
+# a recurring free tier that also delivers native 16:9 at 1080p+. The free
+# options either cap below 1080p (Cloudflare flux-schnell, SiliconFlow,
+# ModelScope) or allow roughly one usable image per day (Cloudflare
+# lucid-origin). Don't go looking again without new evidence.
+IMAGE_PROVIDER = "fal"
 #
 # WHY WE LEFT POLLINATIONS (verified live 2026-08-05, not assumed):
 #   1. It stopped being free. Every genuinely new prompt now returns
@@ -88,7 +106,7 @@ TTS_BACKOFF_BASE_SECONDS = 2.0
 #                    each zoom softens slightly.
 #     4K  $0.151   -> 3840x2160. Full headroom at any zoom. This is the default.
 # A 69-scene video therefore costs about $10.42 at 4K, or $6.97 at 2K.
-IMAGE_API_KEY_ENV = "GEMINI_API_KEY"
+GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
 IMAGE_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions"
 IMAGE_MODEL = "gemini-3.1-flash-image"  # supports 16:9 and up to 4K (flash-lite caps at 1K)
 IMAGE_ASPECT_RATIO = "16:9"
@@ -110,27 +128,64 @@ IMAGE_MIME_TYPE = IMAGE_MIME_TYPES[0]
 # about its contents. If the runtime mime fallback above kicks in, the bytes
 # are still written to this path -- every downstream consumer (PIL, ffmpeg,
 # Real-ESRGAN) identifies the format from the file's magic bytes, not its name.
-IMAGE_FILE_EXT = ".jpg" if IMAGE_MIME_TYPE == "image/jpeg" else ".png"
-# Paid-tier limit is far higher than the old free 10 req/min, but 6s costs
-# nothing meaningful against a multi-hour render and keeps 429s rare.
+IMAGE_FILE_EXT = ".jpg"
+
+# --- fal.ai / FLUX.2 Turbo (the default provider) ---
+FAL_API_KEY_ENV = "FAL_KEY"
+FAL_ENDPOINT = "https://fal.run/fal-ai/flux-2/turbo"
+# VERIFIED against fal's OpenAPI schema, not assumed: image_size accepts either
+# a preset string or an explicit {width, height}, and for this model both must
+# be between 512 and 2048. ALWAYS send explicit pixels. The named presets are
+# the exact trap that produced the old blurry output -- "landscape_16_9" on a
+# 1-megapixel model means 1024x576, which is BELOW the 1920x1080 we render to.
+FAL_IMAGE_WIDTH = 2048
+FAL_IMAGE_HEIGHT = 1152   # 2048x1152 is true 16:9 and the largest 16:9 allowed
+FAL_OUTPUT_FORMAT = "jpeg"        # enum: jpeg | png | webp
+FAL_SYNC_MODE = True              # return the image inline instead of a CDN URL
+FAL_GUIDANCE_SCALE = 2.5          # schema default; higher = follows prompt harder
+FAL_ENABLE_SAFETY_CHECKER = True
+
+# One fixed seed for every scene in the video. This is the style-consistency
+# lever we LOST when Pollinations died and Google turned out to expose no seed:
+# same seed + different prompt keeps the look coherent across all 69 scenes.
+# Change it to reroll the whole video's aesthetic; keep it fixed within a video.
+# Still keep the identical style suffix on every prompt in Visuals.txt -- the
+# two reinforce each other, and only the suffix survives a provider change.
+IMAGE_SEED = 424242
+
+# Paid rate limits are far higher than the old free 10 req/min, but 6s costs
+# nothing meaningful against a multi-hour render and keeps 429s rare. It also
+# bounds the damage if a run goes wrong: images cost real money now.
 IMAGE_MIN_INTERVAL_SECONDS = 6.0
 IMAGE_MAX_RETRIES = 6
 IMAGE_BACKOFF_BASE_SECONDS = 3.0
-# NOTE: the old fixed IMAGE_SEED is gone -- this API exposes no seed parameter.
-# Cross-scene style consistency now rests entirely on repeating an identical
-# style suffix on every prompt in Visuals.txt, which was always the dominant
-# factor of the two. Keep those suffixes byte-identical.
+
+# Resolved for whichever provider is active, so the rest of the code and
+# doctor.py don't each need to know the provider matrix.
+IMAGE_API_KEY_ENV = FAL_API_KEY_ENV if IMAGE_PROVIDER == "fal" else GEMINI_API_KEY_ENV
+
+
+def describe_image_settings() -> str:
+    """One-line summary of what the active provider will actually generate.
+    Used by render.py and doctor.py so neither has to know the provider matrix."""
+    if IMAGE_PROVIDER == "fal":
+        return (f"FLUX.2 Turbo {FAL_IMAGE_WIDTH}x{FAL_IMAGE_HEIGHT} "
+                f"seed={IMAGE_SEED} (~$0.019/image)")
+    return f"{IMAGE_MODEL} {IMAGE_ASPECT_RATIO} {IMAGE_SIZE} (no seed)"
 
 # --- Video ---
 FPS = 30
 CROSSFADE_SECONDS = 1.0
-ZOOM_MAX = 1.25     # Was lowered from 1.5 back when sources were a soft
-                    # 1024x576 and every extra bit of zoom magnified that
-                    # softness into mush. Sources are now natively 3840x2160,
-                    # so that constraint no longer applies -- 1.5 is safe again
-                    # if more motion is wanted. Left at 1.25 because it's a
-                    # LOOK decision, not a technical one: raise it only after
-                    # eyeballing a sample, not by default.
+ZOOM_MAX = 1.25     # At a 2048px source this crops to 2048/1.25 = 1638px
+                    # feeding a 1920px frame, i.e. a ~17% upscale at PEAK zoom
+                    # only, ramping in gradually. That is mild and was judged an
+                    # acceptable trade for an 8x cost reduction -- for scale,
+                    # the old Pollinations images were an 87% upscale for the
+                    # whole scene, which is what "blurry" actually looked like.
+                    # Drop to 1.07 for mathematically zero upscaling (but
+                    # almost no motion), or raise it if you prefer the movement
+                    # to the sharpness. This is a LOOK decision -- judge it on a
+                    # 3-scene sample rather than changing it blind.
 ZOOM_STEP = 0.0006  # calmer baseline motion (reference video measured ~2.5 mean
                     # frame-diff vs our old 3.5 at step=0.0008; this is the trade)
 
@@ -161,15 +216,14 @@ FILM_GRAIN_FILTER = "noise=alls=6:allf=t+u"
 FINISH_FILTER = ",".join([SHARPEN_FILTER, COLOR_GRADE_FILTER, VIGNETTE_FILTER, FILM_GRAIN_FILTER])
 
 # The working resolution the zoompan stage operates at, before the final
-# 1920x1080 output. Sources now arrive natively at 3840x2160 (IMAGE_SIZE="4K"),
-# so this is a no-op passthrough: no upscale, no downscale, no resampling at
-# all before the zoom. Every pixel the viewer sees is real generated detail.
+# 1920x1080 output.
 #
-# It stays comfortably above the 1920x1080 target on purpose -- ZOOM_MAX crops
-# into the frame, so at full zoom we still have 3840/1.25 = 3072 real pixels
-# feeding a 1920-wide output. That headroom is why the zoom stays sharp instead
-# of turning into mush at the end of a scene.
-SCALE_PRE_ZOOMPAN_WIDTH = 3840
+# !! THIS MUST TRACK THE PROVIDER'S OUTPUT WIDTH. It is a no-op passthrough only
+# when it equals the generated width -- set it higher and assemble.py upscales
+# every source before zooming (spending time to add blur), set it lower and it
+# throws away detail you paid for. fal/FLUX.2 Turbo caps at 2048, so 2048 it is.
+# If you switch IMAGE_PROVIDER to gemini at 4K, raise this to 3840 to match.
+SCALE_PRE_ZOOMPAN_WIDTH = 2048
 
 # Per-scene zoompan motion variants (selected by scene index % 3) so all 69
 # clips aren't mechanically identical -- pure center zoom-in was flagged as

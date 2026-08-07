@@ -12,6 +12,7 @@ than trusted.
 No network and no ffmpeg needed -- requests.post is stubbed.
 """
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -291,6 +292,135 @@ def test_cached_image_is_reused_across_file_extensions():
         assert scene["image_file"] == "build/images/99.png", scene["image_file"]
     finally:
         legacy.unlink()
+
+
+# --- fal.ai provider ------------------------------------------------------
+
+DATA_URI = "data:image/jpeg;base64," + IMAGE_B64
+
+
+def make_fal(responses):
+    fake = FakeRequests(responses)
+    images.requests = fake
+    return images.FalProvider(api_key="test-key"), fake
+
+
+def test_fal_requests_explicit_pixels_not_a_named_preset():
+    """The single most important assertion in this file. Named presets like
+    'landscape_16_9' mean 1024x576 on a 1-megapixel model -- BELOW the 1920x1080
+    we render to. That is exactly the trap that made the old images blurry."""
+    out = config.BUILD_DIR / "_test_fal_body.bin"
+    provider, fake = make_fal([FakeResponse(200, {"images": [{"url": DATA_URI}]})])
+    try:
+        provider.fetch("a fox in fog", out)
+        body = fake.calls[0]
+        assert body["prompt"] == "a fox in fog"
+        size = body["image_size"]
+        assert isinstance(size, dict), f"must be explicit pixels, got {size!r}"
+        assert size["width"] == config.FAL_IMAGE_WIDTH
+        assert size["height"] == config.FAL_IMAGE_HEIGHT
+        assert size["width"] >= 1920, "source must not be below the 1080p output"
+        assert abs(size["width"] / size["height"] - 16 / 9) < 0.01, "must be 16:9"
+        assert body["seed"] == config.IMAGE_SEED, "fixed seed holds style across scenes"
+        assert body["num_images"] == 1
+    finally:
+        if out.exists():
+            out.unlink()
+
+
+def test_fal_working_resolution_matches_the_zoompan_stage():
+    """If these diverge, assemble.py resamples every frame -- upscaling (adding
+    blur) or downscaling (discarding detail that was paid for)."""
+    assert config.FAL_IMAGE_WIDTH == config.SCALE_PRE_ZOOMPAN_WIDTH, (
+        f"images generate at {config.FAL_IMAGE_WIDTH}px but zoompan works at "
+        f"{config.SCALE_PRE_ZOOMPAN_WIDTH}px")
+
+
+def test_fal_decodes_inline_data_uri_without_a_second_request():
+    out = config.BUILD_DIR / "_test_fal_datauri.bin"
+    provider, fake = make_fal([FakeResponse(200, {"images": [{"url": DATA_URI}]})])
+    try:
+        provider.fetch("x", out)
+        assert out.stat().st_size > 5000
+        assert len(fake.calls) == 1, "data URI needs no follow-up download"
+    finally:
+        if out.exists():
+            out.unlink()
+
+
+def test_fal_missing_key_is_actionable():
+    saved = os.environ.pop(config.FAL_API_KEY_ENV, None)
+    try:
+        images.FalProvider()
+        assert False, "should have raised MissingAPIKeyError"
+    except MissingAPIKeyError as e:
+        assert "fal.ai" in str(e), e
+    finally:
+        if saved is not None:
+            os.environ[config.FAL_API_KEY_ENV] = saved
+
+
+def test_fal_bad_key_401_fails_fast():
+    provider, fake = make_fal([FakeResponse(
+        401, {"detail": "Authentication is required to access this application."})])
+    try:
+        provider.fetch("x", Path("unused.jpg"))
+        assert False, "should have raised MissingAPIKeyError"
+    except MissingAPIKeyError:
+        pass
+    assert len(fake.calls) == 1, len(fake.calls)
+
+
+def test_fal_out_of_credit_fails_fast():
+    provider, fake = make_fal([FakeResponse(402, {"detail": "Insufficient balance."})])
+    try:
+        provider.fetch("x", Path("unused.jpg"))
+        assert False, "should have raised ImageQuotaError"
+    except ImageQuotaError as e:
+        assert "fal.ai/dashboard/billing" in str(e), e
+    assert len(fake.calls) == 1, "topping up is the fix; retrying is not"
+
+
+def test_fal_validation_error_422_keeps_the_field_name():
+    provider, fake = make_fal([FakeResponse(422, {"detail": [
+        {"loc": ["body", "image_size", "width"], "msg": "must be <= 2048"}]})])
+    try:
+        provider.fetch("x", Path("unused.jpg"))
+        assert False, "should have raised ImageRequestRejectedError"
+    except ImageRequestRejectedError as e:
+        assert "image_size" in str(e) and "2048" in str(e), e
+    assert len(fake.calls) == 1, len(fake.calls)
+
+
+def test_fal_rate_limit_is_retried():
+    out = config.BUILD_DIR / "_test_fal_429.bin"
+    provider, fake = make_fal([
+        FakeResponse(429, {"detail": "Rate limit exceeded"}),
+        FakeResponse(200, {"images": [{"url": DATA_URI}]}),
+    ])
+    try:
+        provider.fetch("x", out)
+        assert len(fake.calls) == 2, len(fake.calls)
+    finally:
+        if out.exists():
+            out.unlink()
+
+
+def test_make_provider_selects_by_config_and_rejects_typos():
+    saved = os.environ.get(config.FAL_API_KEY_ENV)
+    os.environ[config.FAL_API_KEY_ENV] = "test-key"
+    try:
+        assert isinstance(images.make_provider("fal"), images.FalProvider)
+        try:
+            images.make_provider("flux")
+            assert False, "an unknown provider name must not be silently ignored"
+        except ValueError as e:
+            assert "fal" in str(e) and "gemini" in str(e), e
+    finally:
+        if saved is None:
+            os.environ.pop(config.FAL_API_KEY_ENV, None)
+        else:
+            os.environ[config.FAL_API_KEY_ENV] = saved
 
 
 def run_all():

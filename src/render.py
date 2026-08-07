@@ -17,7 +17,7 @@ import parse
 import timing
 from assemble import mux_audio, render_scene_clip, xfade_chain
 from audio import build_scene_audio
-from images import GeminiProvider, get_image
+from images import get_image, make_provider
 from loudness import normalize as normalize_loudness
 from tts import EdgeTTSProvider
 from upscale import get_upscaled_image
@@ -45,9 +45,9 @@ def run(indices: list, output_path, label: str, upscale: bool = True):
         s["measured_duration"] = timing.probe_duration(audio_path)
     timing.print_timing_table(selected, all_scenes)
 
-    print(f"\n--- Stage 3/5: Images ({config.IMAGE_MODEL}, {config.IMAGE_ASPECT_RATIO} "
-          f"{config.IMAGE_SIZE}, cached) ---")
-    img_provider = GeminiProvider()
+    img_provider = make_provider()
+    print(f"\n--- Stage 3/5: Images ({config.IMAGE_PROVIDER}: "
+          f"{config.describe_image_settings()}, cached) ---")
     for s in selected:
         get_image(s, img_provider)
 

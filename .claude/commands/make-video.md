@@ -40,19 +40,20 @@ there's no `.venv` yet).
   `.claude/commands/setup.md`, asking permission once in plain English first.
   Something like: "Quick thing — a couple of tools aren't installed yet. Want me
   to set them up? Takes a minute or two."
-- **If `GEMINI_API_KEY` is missing, that's a hard stop** — no key, no pictures.
-  Walk him through Step 3 of `setup.md` (~5 minutes, needs his Google login and
-  billing enabled). It's the only step you genuinely cannot do for him. Never
-  print the key back to him and never write it into a file.
-- **Images cost real money now** — about $0.15 each, so ~$10 for a 69-scene
+- **If the image API key is missing, that's a hard stop** — no key, no pictures.
+  `doctor.py` names the variable for the active provider (`FAL_KEY` by default).
+  Walk him through Step 3 of `setup.md` (~5 minutes, needs his own account with
+  credit on it). It's the only step you genuinely cannot do for him. Never print
+  the key back to him and never write it into a file.
+- **Images cost real money now** — about 2 cents each, so ~$1.30 for a 69-scene
   video. Tell him the estimated cost for *his* scene count before starting a
   full run, once, in one sentence. He's spending his own money; he gets to
   decide. Don't re-raise it on every render.
-- **If images fail with a zero-quota error**, billing isn't enabled on the key's
-  project. Say that directly — it is not a broken key, not a rate limit, and not
+- **If images fail with a balance/quota error**, the account is out of credit.
+  Say that directly — it is not a broken key, not a rate limit, and not
   something waiting will fix.
-- Ignore the upscaler entirely. Images arrive at 4K and it auto-skips, so
-  `--no-upscale` is no longer something you need to reason about.
+- Ignore the upscaler entirely. Images already exceed the 1080p output and it
+  auto-skips, so `--no-upscale` is no longer something to reason about.
 
 ## Step 1 — Offer the shortcut first
 
@@ -113,10 +114,10 @@ Read `input/README.md` for the exact format, then write `input/Script.txt` and
   **own line sharing the same timestamp** as the line it precedes.
 - Every scene needs real words left after directives are stripped.
 - One `IMAGE:` prompt per scene in `Visuals.txt`, and **append a byte-identical
-  style suffix to every single prompt.** This is now the *only* thing keeping
-  60+ images looking like one film instead of a slideshow — the image API
-  exposes no seed, so the suffix carries all of it. Copy-paste it; never retype
-  or reword it per scene. End each with `no text, 16:9`.
+  style suffix to every single prompt.** Together with the fixed `IMAGE_SEED` in
+  `config.py`, this is what keeps 60+ images looking like one film instead of a
+  slideshow. Copy-paste the suffix; never retype or reword it per scene. End
+  each with `no text, 16:9`.
 - Prompts should be symbolic and concrete — an object, a space, a light source —
   not literal illustrations of the sentence. Never put words inside an image.
 

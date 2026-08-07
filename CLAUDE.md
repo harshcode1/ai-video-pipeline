@@ -3,11 +3,16 @@
 This repo is a **script-to-video pipeline**. Given a narration script and a list
 of image prompts, it produces a finished, loudness-normalized 1080p narrated
 video using local ffmpeg. TTS is still free and keyless. **Images are not free
-any more** — they need a Google AI Studio key in `GEMINI_API_KEY` on a project
-with **billing enabled**, and cost roughly $0.15 each (~$10 for a 69-scene
-video). Every image provider we've used went paid during 2026: Pollinations in
-August, and Google's free image tier disappeared the same month. See
-`src/config.py` for the full post-mortem and the cost-per-resolution table.
+any more** — they need a funded fal.ai account with the key in `FAL_KEY`, and
+cost about $0.019 each (**~$1.30 for a 69-scene video**).
+
+Every image provider we've used went paid during 2026: Pollinations in August,
+and Google's free image tier disappeared the same month. There is now **no free
+provider that also does native 16:9 at 1080p+** — that was researched
+exhaustively, don't go looking again without new evidence. The provider is
+therefore **pluggable** (`IMAGE_PROVIDER` in `src/config.py`: `fal` | `gemini`)
+so the next death is a one-line change. See `src/config.py` for the full
+post-mortem.
 
 **If the user wants to make a video, run the `/make-video` command** — it handles
 the whole interview-and-render flow. **If their machine isn't set up yet, run
@@ -67,8 +72,8 @@ theirs.
 | 0 | `parse.py` | Joins Script + Visuals on `MM:SS` → scene list. No network. | `build/scenes.json` |
 | 1 | `tts.py`, `audio.py`, `silence.py` | Per-line edge-tts voiceover, prosody from `[directives]`, real inserted silence for `[pause]`. | `build/audio/NN.mp3` |
 | 2 | `timing.py` | `ffprobe` measures true audio duration. **Scene length follows the actual voiceover, never the script's own timestamps.** | in-memory |
-| 3 | `images.py` | One Gemini image per scene, native 16:9 at 4K, 6s throttle. Needs `GEMINI_API_KEY` **+ billing**. | `build/images/NN.jpg` |
-| 4 | `upscale.py` | Real-ESRGAN 4×. **Auto-skips now** — 3840px sources need no upscale. | `build/images_upscaled/NN.png` |
+| 3 | `images.py` | One image per scene from the provider in `IMAGE_PROVIDER`. Default fal/FLUX.2 Turbo at 2048×1152, fixed seed, 6s throttle. Needs `FAL_KEY` **+ credit**. | `build/images/NN.jpg` |
+| 4 | `upscale.py` | Real-ESRGAN 4×. **Auto-skips now** — 2048px sources already meet the working resolution. | `build/images_upscaled/NN.png` |
 | 5 | `assemble.py`, `loudness.py` | Per-scene zoompan clip → finish filters → xfade chain → mux with −14 LUFS audio. | `build/scenes/NN.mp4` → `output/` |
 
 ## Commands
@@ -83,7 +88,7 @@ python src/parse.py                       # validate inputs, print the scene tab
 python src/render.py --indices 1,2,3      # checkpoint render -- ALWAYS do this first
 python src/render.py --all                # full run (hours)
 python src/render.py --all --no-upscale   # full run without Real-ESRGAN (rarely
-                                          # needed now -- it auto-skips at 4K)
+                                          # needed -- it already auto-skips)
 python tests/test_assemble.py             # unit tests: xfade math (plain asserts, NOT pytest)
 python tests/test_images.py               # unit tests: image-API error classification (no network)
 python src/forensics.py                   # QA metrics: LUFS, F0 variation, video motion
@@ -101,17 +106,21 @@ overrides the output location.
 - `requirements-forensics.txt` is separate and optional — large binary wheels
   used only by `src/forensics.py`. Don't install it as part of normal setup; a
   failed opencv build must never block someone from making a video.
-- Real-ESRGAN: **no longer needed** — images arrive at 3840×2160 and
-  `upscale.py` skips itself. Only relevant if sources ever shrink again. If you
+- Real-ESRGAN: **no longer needed** — images already arrive at or above the
+  working resolution and `upscale.py` skips itself. Only relevant if sources
+  ever shrink again. If you
   do need it: release tag **`v0.2.5.0`**, asset
   `realesrgan-ncnn-vulkan-20220424-windows.zip`. **Do not use
   `releases/latest`** — the newer v0.3.0 tag publishes no Windows binary.
-- Image API key: https://aistudio.google.com/apikey. Set it with
-  `setx GEMINI_API_KEY "..."` (persistent) — a new shell then picks it up.
-  **A key by itself is not enough**: as of Aug 2026 every Gemini image model
-  lists "Free Tier: not available", so the key's Google Cloud project must have
-  billing enabled or every request comes back with a quota of exactly zero.
-  Google's $300 new-account credit covers roughly 28 full videos.
+- Image API key: https://fal.ai/dashboard/keys. Set it with
+  `setx FAL_KEY "..."` (persistent) — a new shell then picks it up.
+  **A key by itself is not enough**: no provider has a free tier since Aug 2026,
+  so the account needs credit or every request fails. ~$1.30 per video, so a
+  small top-up lasts a long time.
+  (If `IMAGE_PROVIDER = "gemini"` instead: key from
+  https://aistudio.google.com/apikey in `GEMINI_API_KEY`, and its Google Cloud
+  project needs billing enabled. Google's $300 new-account credit covers ~28
+  videos there.)
 
 ## Settings worth changing
 
@@ -122,17 +131,22 @@ All in `src/config.py`:
   on PATH — it only exists inside the venv).
   **Always verify a voice exists before using it.**
 - `EMOTION_PROSODY` / `PAUSE_MS` — what each `[directive]` in the script does.
-- `IMAGE_MODEL` / `IMAGE_SIZE` / `IMAGE_ASPECT_RATIO` — `gemini-3.1-flash-image`
-  at 16:9 / 4K. Uppercase `K` is mandatory. This is the main **cost** lever:
-  4K is $0.151/image, 2K $0.101, 1K $0.067. Don't drop to 1K — at 16:9 that's
-  1024×576, *below* the 1080p output, which is exactly the trap that made the
-  old Pollinations images look blurry. 2K (2048×1152) is a legitimate saving if
-  you also lower `ZOOM_MAX`, since at 1.25 zoom it crops to 1638px feeding a
-  1920px frame. `gemini-3.1-flash-lite-image` is cheaper still but caps at 1K —
-  same reason, don't.
-- `IMAGE_MIME_TYPES` — a tuple, deliberately. Google's docs say both `image/jpeg`
-  and `image/png` are accepted; a live run got a 400 for png. `images.py` starts
-  with the first and auto-falls-back to the second, so leave it as a tuple.
+- `IMAGE_PROVIDER` — `fal` (default) or `gemini`. Everything else about the
+  provider follows from this; `doctor.py` and `render.py` read
+  `config.describe_image_settings()` rather than knowing the matrix themselves.
+- `FAL_IMAGE_WIDTH` / `FAL_IMAGE_HEIGHT` — 2048×1152, true 16:9 and the largest
+  FLUX.2 Turbo allows (**verified against fal's OpenAPI schema: 512–2048**).
+  **Must stay equal to `SCALE_PRE_ZOOMPAN_WIDTH`** or every frame gets
+  resampled; `doctor.py` warns if they drift apart.
+- **Always send explicit pixels, never a named preset.** `landscape_16_9` on a
+  1-megapixel model means 1024×576 — *below* the 1080p output. That preset trap
+  is precisely what made the old Pollinations images blurry.
+- `IMAGE_SEED` — back, and it matters. One fixed seed across all 69 scenes is
+  what holds a single visual style together. Gemini exposes no seed at all, so
+  on that provider consistency falls back to the prompt suffix alone.
+- `IMAGE_MIME_TYPES` — Gemini only. A tuple deliberately: Google's docs say both
+  `image/jpeg` and `image/png` are accepted, a live run got a 400 for png, so
+  `images.py` tries one and falls back. Don't collapse it to a string.
 - **There is no image seed any more** (the API exposes none). Cross-scene style
   consistency now rests *entirely* on repeating a byte-identical style suffix on
   every prompt in `Visuals.txt`. Guard that harder than before.
@@ -148,8 +162,9 @@ All in `src/config.py`:
 | `vkQueueSubmit failed -4` storms | GPU wedged (often a laptop lid close mid-render). `upscale.py` already retries by stepping the **tile size down**, which is the actual fix — more sleeping won't help. If it fails at tile=32, reset the driver (Win+Ctrl+Shift+B) or reboot, then rerun. All completed work is cached. |
 | `Timestamp sets DO NOT match` | A `[MM:SS]` exists in one input file but not the other. The error lists exactly which. |
 | `Scene N has no spoken text` | That line is only `[directives]` with no words left after stripping. Add narration text. |
-| `No image API key found` | `GEMINI_API_KEY` isn't set. Key at https://aistudio.google.com/apikey, then `setx GEMINI_API_KEY "..."`. `doctor.py` checks this before a render wastes the TTS stage. |
-| `quota for ... is zero` (`ImageQuotaError`) | **The most likely failure now.** The key is fine; its project has no billing, and image generation has no free tier since Aug 2026. Enable billing on the key's Google Cloud project. Retrying/waiting can never fix it, which is why it fails fast instead of backing off 6×. |
+| `No image API key found` | The active provider's key isn't set — `FAL_KEY` by default (https://fal.ai/dashboard/keys). `doctor.py` names the right variable and checks it before a render wastes the TTS stage. |
+| `no remaining balance` / `quota ... is zero` (`ImageQuotaError`) | **The most likely failure now.** The key is fine, the account has no credit. Top up at https://fal.ai/dashboard/billing (or enable billing on the Google project if on `gemini`). Waiting can never fix it, which is why it fails fast instead of backing off 6×. |
+| `HTTP 422` from fal | Schema validation — the message names the field. Almost always `image_size`: FLUX.2 Turbo requires 512–2048 on **both** axes. Deterministic, so it does not retry. |
 | `rejected the key ... as invalid` | Bad or revoked key. Note this arrives as **HTTP 400**, not 401/403 — Google returns `INVALID_ARGUMENT`/`API_KEY_INVALID` for a bad key. Classified by `reason`, not status code, so don't "fix" it by only checking 401/403. |
 | `rejected the request (HTTP 400, will not retry)` | Malformed request — the message quotes the field and its allowed values. Deterministic, so it fails immediately instead of burning 6 retries and discarding the explanation. |
 | Image API rejects `mime_type` | Handled automatically: `images.py` retries once with the other entry in `config.IMAGE_MIME_TYPES`. The docs list both jpeg and png as valid but the live API has disagreed, so don't collapse that tuple to one value. |
@@ -162,8 +177,9 @@ All in `src/config.py`:
 
 For a ~69-scene / ~18-minute video:
 
-- Images: 69 × 6s enforced throttle ≈ **7 min minimum** (was 17 min at 15s)
-- Upscaling: **gone** — was ~53 min, now auto-skipped at 4K sources
+- Images: 69 × 6s enforced throttle ≈ **7 min minimum**, and ~$1.30
+- Upscaling: **gone** — was ~53 min, now auto-skipped (sources already meet the
+  working resolution)
 - TTS, scene clips, the 69-input xfade chain, and mux: **the bulk of the time
   now** — the xfade chain is one heavy ffmpeg process
 

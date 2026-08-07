@@ -1,9 +1,22 @@
-"""ImageProvider abstraction. GeminiProvider is the live impl.
+"""ImageProvider abstraction. Pick one with config.IMAGE_PROVIDER; build it
+with make_provider().
 
-PollinationsProvider is kept below as DEAD CODE for reference only -- it went
-paid in Aug 2026 (see the long note in config.py). Do not resurrect it without
-re-testing: it returns cached images for previously-seen prompts, so a casual
-spot-check can look like it still works while every new prompt fails.
+  FalProvider     -- DEFAULT. FLUX.2 Turbo on fal.ai. 2048x1152, seeded,
+                     ~$0.019/image.
+  GeminiProvider  -- Fallback / quality benchmark. Up to 4K, no seed,
+                     ~5-8x the price.
+
+This module is deliberately over-abstracted for its size. Two providers died
+inside the same month (Pollinations went paid; Google deleted its free image
+tier), so the swap cost matters more here than anywhere else in the pipeline.
+
+Every provider classifies failures into fail-fast (bad key, no credit,
+malformed request) vs. worth-retrying (rate limit, 5xx). That distinction is
+the whole point: a render is a multi-hour unattended job, so retrying a
+deterministic failure six times just wastes minutes and buries the reason.
+
+PollinationsProvider and CloudflareWorkersAIProvider below are DEAD CODE kept
+as a record of what was tried and why it was rejected.
 """
 import abc
 import base64
@@ -130,13 +143,13 @@ class GeminiProvider(ImageProvider):
     """
 
     def __init__(self, api_key: str | None = None):
-        self.api_key = api_key or os.environ.get(config.IMAGE_API_KEY_ENV, "").strip()
+        self.api_key = api_key or os.environ.get(config.GEMINI_API_KEY_ENV, "").strip()
         if not self.api_key:
             raise MissingAPIKeyError(
-                f"No image API key found. Set the {config.IMAGE_API_KEY_ENV} environment "
+                f"No image API key found. Set the {config.GEMINI_API_KEY_ENV} environment "
                 f"variable to a key from https://aistudio.google.com/apikey\n"
-                f"  PowerShell (this session):  $env:{config.IMAGE_API_KEY_ENV} = 'your-key'\n"
-                f"  PowerShell (permanent):     setx {config.IMAGE_API_KEY_ENV} \"your-key\""
+                f"  PowerShell (this session):  $env:{config.GEMINI_API_KEY_ENV} = 'your-key'\n"
+                f"  PowerShell (permanent):     setx {config.GEMINI_API_KEY_ENV} \"your-key\""
             )
         self._last_request_time = 0.0
         self.mime_type = config.IMAGE_MIME_TYPE
@@ -177,15 +190,15 @@ class GeminiProvider(ImageProvider):
         # unexplained failure six attempts later.
         if reason == "API_KEY_INVALID" or "api key not valid" in low:
             raise MissingAPIKeyError(
-                f"The image API rejected the key in {config.IMAGE_API_KEY_ENV} as invalid. "
+                f"The image API rejected the key in {config.GEMINI_API_KEY_ENV} as invalid. "
                 f"Get a fresh one at https://aistudio.google.com/apikey then run: "
-                f'setx {config.IMAGE_API_KEY_ENV} "your-key" (and open a NEW terminal). '
+                f'setx {config.GEMINI_API_KEY_ENV} "your-key" (and open a NEW terminal). '
                 f"Detail: {message[:200]}"
             )
         if resp.status_code in (401, 403):
             raise MissingAPIKeyError(
                 f"Image API rejected the key (HTTP {resp.status_code}). Check that "
-                f"{config.IMAGE_API_KEY_ENV} holds a valid key from "
+                f"{config.GEMINI_API_KEY_ENV} holds a valid key from "
                 f"https://aistudio.google.com/apikey -- detail: {message[:300]}"
             )
 
@@ -261,6 +274,154 @@ class GeminiProvider(ImageProvider):
         raise RuntimeError(f"Image fetch failed after {config.IMAGE_MAX_RETRIES} attempts: {last_err}")
 
 
+def _extract_fal_image(payload) -> str | None:
+    """Return the first image reference from a fal response.
+
+    Shape is {"images": [{"url": ...}], "seed": N, "timings": {...}}. With
+    sync_mode the url is a `data:` URI carrying the bytes inline; otherwise
+    it's a CDN link that still has to be downloaded.
+    """
+    if not isinstance(payload, dict):
+        return None
+    for item in payload.get("images") or []:
+        if isinstance(item, dict) and isinstance(item.get("url"), str):
+            return item["url"]
+    return None
+
+
+def _fal_error_message(resp) -> str:
+    """fal reports errors as {"detail": "..."} for auth/runtime problems and
+    {"detail": [{"loc": [...], "msg": ...}, ...]} for schema validation."""
+    try:
+        payload = resp.json()
+    except Exception:
+        return resp.text[:300]
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    if isinstance(detail, str):
+        return detail[:400]
+    if isinstance(detail, list):
+        parts = []
+        for item in detail:
+            if isinstance(item, dict):
+                loc = ".".join(str(x) for x in (item.get("loc") or []))
+                parts.append(f"{loc}: {item.get('msg', '')}".strip(": "))
+        if parts:
+            return "; ".join(parts)[:400]
+    return resp.text[:300]
+
+
+class FalProvider(ImageProvider):
+    """Black Forest Labs FLUX.2 Turbo, hosted on fal.ai. The default.
+
+    Chosen over Gemini on two counts, not one: ~8x cheaper (~$1.30 vs $10.42
+    for a 69-scene video), and it exposes a SEED, which restores the
+    cross-scene style consistency that was lost when Pollinations died.
+
+    Generates 2048x1152 -- true 16:9 and the largest this model allows. That
+    is above the 1920x1080 output, so nothing is invented; only the last part
+    of each zoom crops in past 1:1 (see ZOOM_MAX in config.py).
+    """
+
+    def __init__(self, api_key: str | None = None):
+        self.api_key = api_key or os.environ.get(config.FAL_API_KEY_ENV, "").strip()
+        if not self.api_key:
+            raise MissingAPIKeyError(
+                f"No image API key found. Set the {config.FAL_API_KEY_ENV} environment "
+                f"variable to a key from https://fal.ai/dashboard/keys\n"
+                f"  PowerShell (this session):  $env:{config.FAL_API_KEY_ENV} = 'your-key'\n"
+                f"  PowerShell (permanent):     setx {config.FAL_API_KEY_ENV} \"your-key\""
+            )
+        self._last_request_time = 0.0
+
+    def _throttle(self):
+        wait = config.IMAGE_MIN_INTERVAL_SECONDS - (time.time() - self._last_request_time)
+        if wait > 0:
+            time.sleep(wait)
+
+    def _check_response(self, resp) -> None:
+        if resp.status_code == 200:
+            return
+        message = _fal_error_message(resp)
+        low = message.lower()
+
+        if resp.status_code in (401, 403):
+            raise MissingAPIKeyError(
+                f"fal.ai rejected the key in {config.FAL_API_KEY_ENV} (HTTP "
+                f"{resp.status_code}). Check it at https://fal.ai/dashboard/keys, then: "
+                f'setx {config.FAL_API_KEY_ENV} "your-key" (and open a NEW terminal). '
+                f"Detail: {message[:200]}"
+            )
+        # 402 is the explicit out-of-credit signal; some deployments phrase it
+        # as a 403 mentioning balance. Either way, waiting cannot fix it.
+        if resp.status_code == 402 or "balance" in low or "insufficient" in low:
+            raise ImageQuotaError(
+                f"fal.ai reports no remaining balance, so retrying will not help. "
+                f"Top up at https://fal.ai/dashboard/billing -- a 69-scene video costs "
+                f"about $1.30 at the current settings. Detail: {message[:200]}"
+            )
+        if resp.status_code == 422:
+            # Schema validation -- deterministic, and the body names the field.
+            raise ImageRequestRejectedError(
+                f"fal.ai rejected the request (HTTP 422, will not retry). "
+                f"Check the image_size/format settings in config.py -- {message}"
+            )
+        if resp.status_code == 429:
+            raise RuntimeError(f"HTTP 429 rate limited: {message[:200]}")
+        raise RuntimeError(f"HTTP {resp.status_code}: {message[:300]}")
+
+    def _resolve_bytes(self, url: str) -> bytes:
+        """A data: URI carries the image inline; anything else is a CDN link.
+        Note fal's CDN links expire, so download immediately -- never cache the
+        URL and fetch it later."""
+        if url.startswith("data:"):
+            _, _, encoded = url.partition(",")
+            return base64.b64decode(encoded)
+        dl = requests.get(url, timeout=300)
+        dl.raise_for_status()
+        return dl.content
+
+    def fetch(self, prompt: str, out_path: Path) -> None:
+        headers = {"Authorization": f"Key {self.api_key}",
+                   "Content-Type": "application/json"}
+        body = {
+            "prompt": prompt,
+            # Explicit pixels, never a named preset -- see the note in config.py.
+            "image_size": {"width": config.FAL_IMAGE_WIDTH,
+                           "height": config.FAL_IMAGE_HEIGHT},
+            "num_images": 1,
+            "output_format": config.FAL_OUTPUT_FORMAT,
+            "sync_mode": config.FAL_SYNC_MODE,
+            "guidance_scale": config.FAL_GUIDANCE_SCALE,
+            "enable_safety_checker": config.FAL_ENABLE_SAFETY_CHECKER,
+            "seed": config.IMAGE_SEED,
+        }
+
+        last_err = None
+        for attempt in range(1, config.IMAGE_MAX_RETRIES + 1):
+            self._throttle()
+            self._last_request_time = time.time()
+            try:
+                resp = requests.post(config.FAL_ENDPOINT, json=body, headers=headers, timeout=300)
+                self._check_response(resp)
+
+                url = _extract_fal_image(resp.json())
+                if not url:
+                    raise RuntimeError(f"no image in response. Body starts: {resp.text[:300]}")
+                data = self._resolve_bytes(url)
+                if len(data) < 5000:
+                    raise RuntimeError(f"suspiciously small image ({len(data)}B)")
+                out_path.write_bytes(data)
+                return
+            except (MissingAPIKeyError, ImageRequestRejectedError, ImageQuotaError):
+                raise
+            except Exception as e:
+                last_err = e
+                sleep_s = config.IMAGE_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)) + random.uniform(0, 2)
+                print(f"    Image attempt {attempt}/{config.IMAGE_MAX_RETRIES} failed ({e}); retrying in {sleep_s:.1f}s")
+                time.sleep(sleep_s)
+        raise RuntimeError(f"Image fetch failed after {config.IMAGE_MAX_RETRIES} attempts: {last_err}")
+
+
 class PollinationsProvider(ImageProvider):
     """DEAD as of Aug 2026 -- kept only to document what was tried.
 
@@ -311,6 +472,28 @@ class CloudflareWorkersAIProvider(ImageProvider):
 
     def fetch(self, prompt: str, out_path: Path) -> None:
         raise NotImplementedError
+
+
+PROVIDERS = {
+    "fal": FalProvider,
+    "gemini": GeminiProvider,
+}
+
+
+def make_provider(name: str | None = None) -> ImageProvider:
+    """Build the provider named by config.IMAGE_PROVIDER.
+
+    The indirection exists because this is the part of the pipeline that keeps
+    breaking for reasons outside our control -- two providers died in the same
+    month. Swapping is a one-line config change, not a code change.
+    """
+    name = (name or config.IMAGE_PROVIDER).strip().lower()
+    if name not in PROVIDERS:
+        raise ValueError(
+            f"Unknown IMAGE_PROVIDER {name!r} in config.py. "
+            f"Valid options: {', '.join(sorted(PROVIDERS))}"
+        )
+    return PROVIDERS[name]()
 
 
 def get_image(scene: dict, provider: ImageProvider) -> Path:

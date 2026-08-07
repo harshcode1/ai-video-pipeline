@@ -82,27 +82,40 @@ def check_image_api():
     see config.py). Without it a render dies at stage 3, after the TTS work."""
     import os
     import config
+    signup = {"fal": "https://fal.ai/dashboard/keys",
+              "gemini": "https://aistudio.google.com/apikey"}.get(config.IMAGE_PROVIDER, "")
     key = os.environ.get(config.IMAGE_API_KEY_ENV, "").strip()
     if not key:
         report(FAIL, "image API key",
-               f"{config.IMAGE_API_KEY_ENV} is not set. Create a key at "
-               f"https://aistudio.google.com/apikey (billing must be enabled on its "
-               f"project -- image generation has no free tier since Aug 2026), then "
-               f'run: setx {config.IMAGE_API_KEY_ENV} "your-key"')
+               f"{config.IMAGE_API_KEY_ENV} is not set (provider is "
+               f"'{config.IMAGE_PROVIDER}'). Create a key at {signup}, add credit, "
+               f'then run: setx {config.IMAGE_API_KEY_ENV} "your-key" and open a NEW '
+               f"terminal.")
         return
-    report(PASS, "image API key", f"{config.IMAGE_API_KEY_ENV} set ({len(key)} chars)")
-    report(PASS, "image settings",
-           f"{config.IMAGE_MODEL} @ {config.IMAGE_ASPECT_RATIO} {config.IMAGE_SIZE}")
-    # A valid key is NOT sufficient any more, and this is the failure people
-    # actually hit. Image generation has no free tier as of Aug 2026, so an
-    # unbilled project returns a zero quota. We can't detect that without
-    # spending a real request, so say it plainly rather than let a render get
-    # two stages in and die.
+    report(PASS, "image API key",
+           f"{config.IMAGE_API_KEY_ENV} set ({len(key)} chars), provider={config.IMAGE_PROVIDER}")
+    report(PASS, "image settings", config.describe_image_settings())
+
+    # The zoompan stage works at SCALE_PRE_ZOOMPAN_WIDTH. If that doesn't match
+    # what the provider actually generates, every source is silently resampled
+    # -- upscaled (wasting time to add blur) or downscaled (throwing away
+    # detail that was paid for). Cheap to check here, invisible otherwise.
+    if config.IMAGE_PROVIDER == "fal" and config.FAL_IMAGE_WIDTH != config.SCALE_PRE_ZOOMPAN_WIDTH:
+        report(WARN, "working resolution",
+               f"SCALE_PRE_ZOOMPAN_WIDTH={config.SCALE_PRE_ZOOMPAN_WIDTH} but images "
+               f"generate at {config.FAL_IMAGE_WIDTH}px -- every frame gets resampled. "
+               f"Set them equal in config.py.")
+
+    # A valid key is NOT sufficient, and this is the failure people actually
+    # hit. No provider has a free tier any more, so an unfunded account fails
+    # at stage 3 after the TTS work. We can't detect that without spending a
+    # real request, so say it plainly instead.
+    est = "~$1.30 for a 69-scene video" if config.IMAGE_PROVIDER == "fal" \
+        else "~$7-10 for a 69-scene video"
     report(WARN, "image billing",
-           "a key alone is not enough -- image generation has no free tier since "
-           "Aug 2026. If the key's Google Cloud project has no billing enabled, "
-           "every image fails with a zero quota. Est. cost at these settings: "
-           "~$0.15/image (~$10 for a 69-scene video).")
+           f"a key alone is not enough -- no image provider has a free tier since "
+           f"Aug 2026. If the account has no credit, every image fails. "
+           f"Est. cost at these settings: {est}.")
 
 
 def check_inputs():
@@ -238,7 +251,7 @@ def main():
     check_deps()
     print("\nImage generation")
     check_image_api()
-    print("\nUpscaler (no longer needed -- sources are natively 4K)")
+    print("\nUpscaler (no longer needed -- sources already meet the working resolution)")
     check_upscaler(args.test_upscale)
     print("\nInputs")
     check_inputs()

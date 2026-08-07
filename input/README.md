@@ -51,7 +51,8 @@ One `IMAGE:` prompt per scene, same timestamps:
 ```
 
 Repeat a **byte-identical** style suffix on every prompt (medium, lighting,
-palette, `no text`, `16:9`, …). That suffix is the *only* thing keeping all
-scenes looking like one film instead of N unrelated pictures — the image API
-exposes no seed parameter, so there is no second mechanism backing it up.
-Copy-paste the suffix rather than retyping it. Duplicate timestamps are an error.
+palette, `no text`, `16:9`, …). Together with the fixed `IMAGE_SEED` in
+`src/config.py`, that suffix is what keeps all scenes looking like one film
+instead of N unrelated pictures. The two reinforce each other, but only the
+suffix survives a change of image provider — so keep guarding it. Copy-paste it
+rather than retyping. Duplicate timestamps are an error.
