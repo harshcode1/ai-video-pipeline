@@ -134,9 +134,6 @@ def build_scenes():
             "pause_ms": s["pause_ms"],
             "raw_directives": s["raw_directives"],
             "image_prompt": visuals[key],
-            "audio_file": f"build/audio/{i:02d}.mp3",
-            "image_file": f"build/images/{i:02d}{config.IMAGE_FILE_EXT}",
-            "scene_file": f"build/scenes/{i:02d}.mp4",
         })
 
     return meta, scenes

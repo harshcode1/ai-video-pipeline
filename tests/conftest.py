@@ -130,3 +130,25 @@ def probe_video(path) -> dict:
     num, den = data["streams"][0]["r_frame_rate"].split("/")
     return {"width": data["streams"][0]["width"], "height": data["streams"][0]["height"],
             "fps": int(num) / int(den), "duration": float(data["format"]["duration"])}
+
+
+class FakeImageProvider:
+    """Writes a small synthetic JPEG whose pixels depend on the prompt. Records calls."""
+
+    def __init__(self, seed: int = 1, fail_on_prompt: str | None = None):
+        self.seed = seed
+        self.calls = []
+        self.fail_on_prompt = fail_on_prompt
+
+    def fingerprint(self) -> dict:
+        return {"provider": "fake-img", "seed": self.seed}
+
+    def fetch(self, prompt, out_path):
+        if self.fail_on_prompt is not None and prompt == self.fail_on_prompt:
+            raise RuntimeError(f"simulated provider failure on {prompt!r}")
+        self.calls.append(prompt)
+        make_jpeg(out_path, seed=abs(hash(prompt)) % 7, size=(320, 180))
+
+    @property
+    def prompts(self):
+        return self.calls
