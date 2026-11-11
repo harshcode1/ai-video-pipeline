@@ -29,12 +29,21 @@ from urllib.parse import quote
 
 import requests
 
+import cache
 import config
 
 
 class ImageProvider(abc.ABC):
     @abc.abstractmethod
     def fetch(self, prompt: str, out_path: Path) -> None:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def fingerprint(self) -> dict:
+        """Every setting that can change the picture this provider returns for a
+        given prompt (model, size, seed, ...) -- but never the API key. Part of
+        the image's cache key, so changing a setting re-generates instead of
+        silently reusing pictures made with the old one."""
         raise NotImplementedError
 
 
@@ -154,6 +163,16 @@ class GeminiProvider(ImageProvider):
         self._last_request_time = 0.0
         self.mime_type = config.IMAGE_MIME_TYPE
         self._tried_mime_types = {self.mime_type}
+
+    def fingerprint(self) -> dict:
+        return {
+            "provider": "gemini",
+            "endpoint": config.IMAGE_ENDPOINT,
+            "model": config.IMAGE_MODEL,
+            "aspect_ratio": config.IMAGE_ASPECT_RATIO,
+            "image_size": config.IMAGE_SIZE,
+            "mime_type": config.IMAGE_MIME_TYPE,   # no seed: the API exposes none
+        }
 
     def _throttle(self):
         wait = config.IMAGE_MIN_INTERVAL_SECONDS - (time.time() - self._last_request_time)
@@ -333,6 +352,18 @@ class FalProvider(ImageProvider):
             )
         self._last_request_time = 0.0
 
+    def fingerprint(self) -> dict:
+        return {
+            "provider": "fal",
+            "endpoint": config.FAL_ENDPOINT,
+            "width": config.FAL_IMAGE_WIDTH,
+            "height": config.FAL_IMAGE_HEIGHT,
+            "output_format": config.FAL_OUTPUT_FORMAT,
+            "guidance_scale": config.FAL_GUIDANCE_SCALE,
+            "safety_checker": config.FAL_ENABLE_SAFETY_CHECKER,
+            "seed": config.IMAGE_SEED,
+        }
+
     def _throttle(self):
         wait = config.IMAGE_MIN_INTERVAL_SECONDS - (time.time() - self._last_request_time)
         if wait > 0:
@@ -496,21 +527,29 @@ def make_provider(name: str | None = None) -> ImageProvider:
     return PROVIDERS[name]()
 
 
+def image_key(prompt: str, provider: ImageProvider) -> str:
+    """Cache key for one picture: the full prompt (including the style suffix)
+    plus every provider setting that can change the result."""
+    return cache.short_hash(cache.STAGE_VERSIONS["image"], prompt, provider.fingerprint())
+
+
 def get_image(scene: dict, provider: ImageProvider) -> Path:
-    out_path = config.ROOT / scene["image_file"]
+    """Return this scene's picture, generating it only if no picture with the
+    same key exists. The file is named by the key (prompt + provider settings),
+    so an edited prompt or a changed seed is simply a different file -- and a
+    picture is never reused for content it wasn't made for. Pictures are paid
+    for, so this is also what guarantees a finished scene is never requested
+    twice. Old index-named files (01.jpg) are ignored, never touched."""
+    key = image_key(scene["image_prompt"], provider)
+    out_path = config.IMAGES_DIR / f"{key}{config.IMAGE_FILE_EXT}"
+    scene["image_key"] = key
+    scene["image_file"] = out_path.relative_to(config.ROOT).as_posix()
 
-    # Accept ANY extension for the cached file, not just the configured one.
-    # The image format is a config value that has already changed once (png ->
-    # jpeg), and a rendered image is expensive -- matching only the current
-    # extension would silently re-buy every image in the video after a settings
-    # change. Downstream stages read scene["image_file"], so point it at
-    # whatever was actually found.
-    for candidate in sorted(out_path.parent.glob(f"{scene['index']:02d}.*")):
-        if candidate.is_file() and candidate.stat().st_size > 0:
-            scene["image_file"] = candidate.relative_to(config.ROOT).as_posix()
-            print(f"  [IMG] scene {scene['index']:02d} ({scene['timestamp']}) cached, skipping")
-            return candidate
+    label = f"scene {scene['index']:02d} ({scene['timestamp']})"
+    if cache.is_valid(out_path):
+        print(f"  [IMG] {label} cached, skipping")
+        return out_path
 
-    print(f"  [IMG] scene {scene['index']:02d} ({scene['timestamp']})")
-    provider.fetch(scene["image_prompt"], out_path)
+    print(f"  [IMG] {label}")
+    cache.atomic_write(out_path, lambda tmp: provider.fetch(scene["image_prompt"], tmp))
     return out_path
