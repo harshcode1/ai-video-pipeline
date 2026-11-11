@@ -24,6 +24,7 @@ from upscale import get_upscaled_image
 
 
 def run(indices: list, output_path, label: str, upscale: bool = True):
+    config.ensure_dirs()
     print(f"=== render.py: {label} ({len(indices)} scene(s): {indices}) ===\n")
 
     meta, all_scenes = parse.build_scenes()
