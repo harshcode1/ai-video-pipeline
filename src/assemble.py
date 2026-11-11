@@ -18,6 +18,7 @@ from pathlib import Path
 import cache
 import config
 import ffmpeg_utils
+import parallel
 import timing
 
 
@@ -109,6 +110,29 @@ def render_scene_clip(scene: dict) -> Path:
                                f"{result.stderr[-2000:]}")
 
     return cache.atomic_write(out_path, render)
+
+
+def resolve_clip_workers(workers: int | None) -> int:
+    """Explicit value, else config.CLIP_WORKERS, else about half the CPU cores."""
+    if workers is not None:
+        return workers
+    return config.CLIP_WORKERS or parallel.default_clip_workers()
+
+
+def render_all_clips(scenes: list, workers: int | None = None) -> list:
+    """Render every scene's clip, several at a time (each is its own ffmpeg process).
+
+    Scenes that would produce the identical clip are rendered once; a clip whose
+    file already exists is skipped; the first failure cancels clips that haven't
+    started, and everything already finished stays cached.
+    """
+    workers = resolve_clip_workers(workers)
+    unique = {}
+    for s in scenes:
+        unique.setdefault(clip_key(s["source_key"], s["measured_duration"]), s)
+    parallel.run_pool(list(unique.values()), render_scene_clip, workers)
+    # all cached now: this just records each scene's clip_key / scene_file
+    return [render_scene_clip(s) for s in scenes]
 
 
 def compute_offsets(durations: list, fade: float) -> list:

@@ -22,7 +22,7 @@ import cache
 import config
 import parse
 import timing
-from assemble import final_key, mux_audio, render_scene_clip, video_key, xfade_chain
+from assemble import final_key, mux_audio, render_all_clips, video_key, xfade_chain
 from audio import build_all_audio
 from images import get_image, make_provider
 from loudness import mix_key
@@ -133,7 +133,7 @@ def run(indices: list, output_path, label: str, upscale: bool = True,
             use_raw_source(s)
 
     print("\n--- Stage 5/5: Assemble (ffmpeg: per-scene clip -> xfade -> mux) ---")
-    clip_paths = [render_scene_clip(s) for s in selected]
+    clip_paths = render_all_clips(selected, workers=clip_workers)
     assemble_final(selected, clip_paths, output_path)
 
     print(f"\n=== Done: {output_path} ===")
