@@ -23,7 +23,7 @@ import config
 import parse
 import timing
 from assemble import final_key, mux_audio, render_scene_clip, video_key, xfade_chain
-from audio import build_scene_audio
+from audio import build_all_audio
 from images import get_image, make_provider
 from loudness import mix_key
 from loudness import normalize as normalize_loudness
@@ -92,7 +92,8 @@ def assemble_final(selected: list, clip_paths: list, output_path: Path) -> None:
 
 
 def run(indices: list, output_path, label: str, upscale: bool = True,
-        tts_provider=None, image_provider=None, scenes=None):
+        tts_provider=None, image_provider=None, scenes=None,
+        tts_workers=None, clip_workers=None):
     """tts_provider / image_provider / scenes can be injected (tests use fakes)."""
     config.ensure_dirs()
     output_path = Path(output_path)
@@ -107,10 +108,10 @@ def run(indices: list, output_path, label: str, upscale: bool = True,
     selected = [by_index[i] for i in indices]
     _note_legacy_files()
 
-    print("--- Stage 1/5: TTS (edge-tts, per-line) ---")
+    tts_workers = config.TTS_WORKERS if tts_workers is None else tts_workers
+    print(f"--- Stage 1/5: TTS (edge-tts, per-line, {tts_workers} at a time) ---")
     tts_provider = tts_provider or EdgeTTSProvider()
-    for s in selected:
-        build_scene_audio(s, tts_provider)
+    build_all_audio(selected, tts_provider, workers=tts_workers)
 
     print("\n--- Stage 2/5: Timing (ffprobe measured duration) ---")
     for s in selected:
@@ -138,7 +139,7 @@ def run(indices: list, output_path, label: str, upscale: bool = True,
     print(f"\n=== Done: {output_path} ===")
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
     group = ap.add_mutually_exclusive_group(required=True)
     group.add_argument("--indices", type=str, help="Comma-separated scene indices, e.g. 1,2,5,34,65")
@@ -148,7 +149,15 @@ def main():
     ap.add_argument("--no-upscale", action="store_true",
                     help="Force-skip the Real-ESRGAN stage. Rarely needed: when the "
                          "source already meets the working width the upscaler skips itself.")
-    args = ap.parse_args()
+    ap.add_argument("--tts-workers", type=int, default=None,
+                    help=f"Speech lines synthesized at once (default {config.TTS_WORKERS})")
+    ap.add_argument("--clip-workers", type=int, default=None,
+                    help="Scene clips rendered at once (default: about half the CPU cores)")
+    return ap
+
+
+def main():
+    args = build_parser().parse_args()
 
     if args.all:
         meta, all_scenes = parse.build_scenes()
@@ -160,7 +169,8 @@ def main():
         label = args.label or "checkpoint_" + "-".join(str(i) for i in indices)
         out = config.ROOT / args.out if args.out else config.OUTPUT_DIR / f"{label}.mp4"
 
-    run(indices, out, label, upscale=not args.no_upscale)
+    run(indices, out, label, upscale=not args.no_upscale,
+        tts_workers=args.tts_workers, clip_workers=args.clip_workers)
 
 
 if __name__ == "__main__":

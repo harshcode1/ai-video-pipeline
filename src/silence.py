@@ -1,5 +1,6 @@
 """Generate real silence clips via ffmpeg anullsrc (edge-tts/SSML <break>
 cannot produce clean silence -- <break> is stripped by the Edge endpoint)."""
+import threading
 from pathlib import Path
 
 import cache
@@ -15,11 +16,26 @@ def silence_path(ms: int) -> Path:
     return config.AUDIO_DIR / f"silence_{key}.mp3"
 
 
-def get_silence(ms: int) -> Path:
-    path = silence_path(ms)
-    if cache.is_valid(path):
-        return path
+_locks_guard = threading.Lock()
+_locks: dict = {}
 
+
+def _lock_for(path: Path) -> threading.Lock:
+    with _locks_guard:
+        return _locks.setdefault(path, threading.Lock())
+
+
+def get_silence(ms: int) -> Path:
+    """Many scenes can share one silence clip, and scenes are built on several
+    threads. One thread makes it; the others wait and then reuse it."""
+    path = silence_path(ms)
+    with _lock_for(path):
+        if cache.is_valid(path):
+            return path
+        return _make_silence(ms, path)
+
+
+def _make_silence(ms: int, path: Path) -> Path:
     def make(tmp: Path) -> None:
         cmd = [
             ffmpeg_utils.FFMPEG, "-y",

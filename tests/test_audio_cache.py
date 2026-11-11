@@ -170,3 +170,33 @@ def test_silence_clips_are_hash_named_and_made_once(project):
     assert [p for p in config.AUDIO_DIR.iterdir() if ".tmp" in p.name] == []
     assert timing.probe_duration(first) > 0.35
     assert silence.get_silence(900) != first                 # different length, different file
+
+
+def test_many_threads_asking_for_the_same_silence_make_it_once_without_errors(project, monkeypatch):
+    import threading
+
+    import ffmpeg_utils
+    import silence
+
+    runs = []
+    real_run = ffmpeg_utils.run
+
+    def counting(cmd, **kw):
+        runs.append(cmd)
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr(ffmpeg_utils, "run", counting)
+    errors, paths = [], []
+
+    def ask():
+        try:
+            paths.append(silence.get_silence(400))
+        except Exception as e:                     # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=ask) for _ in range(8)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert errors == []
+    assert len(set(paths)) == 1
+    assert len(runs) == 1                          # one ffmpeg run, not eight

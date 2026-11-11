@@ -55,6 +55,14 @@ PAUSE_MS = {
 # sighs / exhales don't map to an EMOTION_PROSODY entry -> fall back to default.
 KNOWN_DIRECTIVES = set(EMOTION_PROSODY) | set(PAUSE_MS) | {"sighs", "exhales"}
 
+# Speech is synthesized for several lines at once. 4 keeps the load on the free
+# Edge endpoint modest; --tts-workers overrides it for one run.
+TTS_WORKERS = 4
+
+# Per-scene ffmpeg clip renders running at once. None = about half the CPU cores
+# (each render is already multi-threaded); --clip-workers overrides it.
+CLIP_WORKERS = None
+
 TTS_MAX_RETRIES = 5
 TTS_BACKOFF_BASE_SECONDS = 2.0
 
