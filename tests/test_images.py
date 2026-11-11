@@ -23,7 +23,7 @@ import config
 import images
 from images import (GeminiProvider, ImageQuotaError, ImageRequestRejectedError,
                     MissingAPIKeyError, _error_details, _extract_image_bytes,
-                    _is_zero_quota, get_image)
+                    _is_zero_quota)
 
 import base64
 
@@ -268,30 +268,6 @@ def test_extract_handles_several_response_shapes():
 def test_extract_returns_none_for_error_payloads():
     assert _extract_image_bytes(google_error(400, "X", "Y", "nope")) is None
     assert _extract_image_bytes({"data": "short"}) is None
-
-
-# --- cache resolution -----------------------------------------------------
-
-def test_cached_image_is_reused_across_file_extensions():
-    """The output format changed from png to jpeg. A cache keyed on the current
-    extension alone would silently re-buy every image in the video."""
-    legacy = config.IMAGES_DIR / "99.png"
-    if legacy.exists():
-        return  # don't touch a real cached image
-    legacy.write_bytes(b"\x89PNG" + b"x" * 6000)
-    scene = {"index": 99, "timestamp": "00:99", "image_prompt": "unused",
-             "image_file": f"build/images/99{config.IMAGE_FILE_EXT}"}
-
-    class ExplodingProvider:
-        def fetch(self, prompt, out_path):
-            raise AssertionError("re-fetched an image that was already cached")
-
-    try:
-        got = get_image(scene, ExplodingProvider())
-        assert got == legacy, got
-        assert scene["image_file"] == "build/images/99.png", scene["image_file"]
-    finally:
-        legacy.unlink()
 
 
 # --- fal.ai provider ------------------------------------------------------

@@ -534,20 +534,22 @@ def image_key(prompt: str, provider: ImageProvider) -> str:
 
 
 def get_image(scene: dict, provider: ImageProvider) -> Path:
-    out_path = config.ROOT / scene["image_file"]
+    """Return this scene's picture, generating it only if no picture with the
+    same key exists. The file is named by the key (prompt + provider settings),
+    so an edited prompt or a changed seed is simply a different file -- and a
+    picture is never reused for content it wasn't made for. Pictures are paid
+    for, so this is also what guarantees a finished scene is never requested
+    twice. Old index-named files (01.jpg) are ignored, never touched."""
+    key = image_key(scene["image_prompt"], provider)
+    out_path = config.IMAGES_DIR / f"{key}{config.IMAGE_FILE_EXT}"
+    scene["image_key"] = key
+    scene["image_file"] = out_path.relative_to(config.ROOT).as_posix()
 
-    # Accept ANY extension for the cached file, not just the configured one.
-    # The image format is a config value that has already changed once (png ->
-    # jpeg), and a rendered image is expensive -- matching only the current
-    # extension would silently re-buy every image in the video after a settings
-    # change. Downstream stages read scene["image_file"], so point it at
-    # whatever was actually found.
-    for candidate in sorted(out_path.parent.glob(f"{scene['index']:02d}.*")):
-        if candidate.is_file() and candidate.stat().st_size > 0:
-            scene["image_file"] = candidate.relative_to(config.ROOT).as_posix()
-            print(f"  [IMG] scene {scene['index']:02d} ({scene['timestamp']}) cached, skipping")
-            return candidate
+    label = f"scene {scene['index']:02d} ({scene['timestamp']})"
+    if cache.is_valid(out_path):
+        print(f"  [IMG] {label} cached, skipping")
+        return out_path
 
-    print(f"  [IMG] scene {scene['index']:02d} ({scene['timestamp']})")
-    provider.fetch(scene["image_prompt"], out_path)
+    print(f"  [IMG] {label}")
+    cache.atomic_write(out_path, lambda tmp: provider.fetch(scene["image_prompt"], tmp))
     return out_path
