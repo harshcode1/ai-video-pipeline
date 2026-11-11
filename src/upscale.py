@@ -17,7 +17,11 @@ import subprocess
 import time
 from pathlib import Path
 
+import cache
 import config
+
+# Part of the upscaled picture's cache key (see upscale_key).
+UPSCALER_SETTINGS = {"model": "realesrgan-x4plus", "scale": 4}
 
 MIN_VALID_BYTES = 500_000  # a real 4x upscale of a painting is multi-MB; a
                             # fully-dead GPU buffer lands under 30KB.
@@ -120,24 +124,44 @@ def _source_width(path: Path) -> int | None:
         return None
 
 
-def get_upscaled_image(scene: dict) -> Path:
-    raw_path = config.ROOT / scene["image_file"]
-    out_path = config.IMAGES_UPSCALED_DIR / f"{scene['index']:02d}.png"
-    if _is_valid_output(out_path):
-        print(f"  [UPSCALE] scene {scene['index']:02d} ({scene['timestamp']}) cached, skipping")
-        return out_path
+def upscale_key(source_key: str) -> str:
+    """Key of an upscaled picture: the source picture's key plus the upscaler
+    settings. A new source picture can therefore never pick up an old upscale."""
+    return cache.short_hash(cache.STAGE_VERSIONS["upscale"], source_key, UPSCALER_SETTINGS)
 
-    # Images now arrive natively at 3840x2160, which already meets the working
-    # resolution the zoompan stage runs at -- upscaling further would cost ~46s
-    # per image to add nothing but resampling softness. Only the old 1024x576
-    # sources ever needed Real-ESRGAN. assemble.render_scene_clip() falls back
-    # to the raw image when no upscaled file exists, so returning the raw path
-    # here is all that's required.
+
+def use_raw_source(scene: dict) -> Path:
+    """Point the scene at its un-upscaled picture (used when upscaling is skipped)."""
+    scene["source_file"] = scene["image_file"]
+    scene["source_key"] = scene["image_key"]
+    return config.ROOT / scene["source_file"]
+
+
+def get_upscaled_image(scene: dict) -> Path:
+    """Decide which picture the clip stage will use, and make it exist.
+
+    Sets scene["source_file"] / scene["source_key"]. The clip stage reads those
+    -- it never looks a file up by scene number, so a stale upscaled file from an
+    earlier script can never win over the current picture.
+    """
+    raw_path = config.ROOT / scene["image_file"]
+    label = f"scene {scene['index']:02d} ({scene['timestamp']})"
+
+    # fal's 2048px images already meet the working resolution the zoompan stage
+    # runs at, so upscaling would cost ~46s per image to add only resampling
+    # softness. Real-ESRGAN runs only for a smaller source.
     width = _source_width(raw_path)
     if width is not None and width >= config.SCALE_PRE_ZOOMPAN_WIDTH:
-        print(f"  [UPSCALE] scene {scene['index']:02d} ({scene['timestamp']}) "
-              f"source already {width}px wide -- no upscale needed")
-        return raw_path
+        print(f"  [UPSCALE] {label} source already {width}px wide -- no upscale needed")
+        return use_raw_source(scene)
 
-    print(f"  [UPSCALE] scene {scene['index']:02d} ({scene['timestamp']}) {width or '?'}px -> 4x")
-    return upscale(raw_path, out_path)
+    ukey = upscale_key(scene["image_key"])
+    out_path = config.IMAGES_UPSCALED_DIR / f"{ukey}.png"
+    scene["source_key"] = ukey
+    scene["source_file"] = out_path.relative_to(config.ROOT).as_posix()
+    if _is_valid_output(out_path):
+        print(f"  [UPSCALE] {label} cached, skipping")
+        return out_path
+
+    print(f"  [UPSCALE] {label} {width or '?'}px -> 4x")
+    return cache.atomic_write(out_path, lambda tmp: upscale(raw_path, tmp))
