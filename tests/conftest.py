@@ -150,3 +150,30 @@ class FakeImageProvider:
     @property
     def prompts(self):
         return self.calls
+
+
+def measure_lufs(path) -> float:
+    """Integrated loudness (LUFS) of a file, measured independently with ffmpeg's
+    ebur128 filter (a different code path from the loudnorm filter under test)."""
+    import re
+
+    import ffmpeg_utils
+    result = ffmpeg_utils.run([ffmpeg_utils.FFMPEG, "-i", str(path), "-af", "ebur128=peak=none",
+                               "-f", "null", "-"])
+    matches = re.findall(r"I:\s+(-?[\d.]+)\s+LUFS", result.stderr)
+    assert matches, result.stderr[-500:]
+    return float(matches[-1])
+
+
+def probe_audio(path) -> dict:
+    """sample_rate, channels and duration of the first audio stream."""
+    import json
+
+    import ffmpeg_utils
+    result = ffmpeg_utils.run([ffmpeg_utils.FFPROBE, "-v", "error", "-select_streams", "a:0",
+                               "-show_entries", "stream=sample_rate,channels:format=duration",
+                               "-of", "json", str(path)])
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    return {"sample_rate": int(data["streams"][0]["sample_rate"]),
+            "channels": data["streams"][0]["channels"], "duration": float(data["format"]["duration"])}
