@@ -6,7 +6,6 @@ So editing one line re-synthesizes one line, and inserting or reordering scenes
 re-synthesizes nothing. Resumable: a stage is skipped when its output exists.
 """
 import shutil
-import subprocess
 from pathlib import Path
 
 import cache
@@ -27,7 +26,7 @@ def _concat_two(a: Path, b: Path, out_path: Path) -> None:
         "-map", "[aout]",
         str(out_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = ffmpeg_utils.run(cmd)
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg concat failed: {result.stderr}")
 

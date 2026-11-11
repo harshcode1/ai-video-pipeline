@@ -5,7 +5,6 @@ without this, the narration reads as weak/quiet regardless of voice quality.
 """
 import json
 import re
-import subprocess
 
 import cache
 import ffmpeg_utils
@@ -29,7 +28,7 @@ def _measure(in_path) -> dict:
         "-af", f"loudnorm=I={TARGET_I}:TP={TARGET_TP}:LRA={TARGET_LRA}:print_format=json",
         "-f", "null", "-",
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = ffmpeg_utils.run(cmd)
     # loudnorm's JSON report is printed to stderr, trailing after other logs
     match = re.search(r"\{[^{}]*\"input_i\"[^{}]*\}", result.stderr, re.DOTALL)
     if not match:
@@ -51,6 +50,6 @@ def normalize(in_path, out_path) -> None:
         "-ar", str(OUTPUT_SAMPLE_RATE),
         str(out_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = ffmpeg_utils.run(cmd)
     if result.returncode != 0:
         raise RuntimeError(f"loudnorm apply pass failed: {result.stderr[-2000:]}")
