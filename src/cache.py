@@ -70,7 +70,15 @@ def atomic_write(final_path, writer) -> Path:
             raise RuntimeError(f"writer produced no output for {final_path.name}")
         if tmp.stat().st_size == 0:
             raise RuntimeError(f"writer produced an empty file for {final_path.name}")
-        os.replace(tmp, final_path)
+        try:
+            os.replace(tmp, final_path)
+        except PermissionError:
+            # Windows refuses to replace a file another thread/process has open. Names
+            # are content hashes, so a valid file already under this name IS the same
+            # content: someone else published it first, which is fine.
+            if not is_valid(final_path):
+                raise
+            tmp.unlink(missing_ok=True)
     except BaseException:
         try:
             tmp.unlink()

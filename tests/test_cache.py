@@ -139,3 +139,32 @@ def test_a_leftover_temp_file_from_a_crash_is_never_mistaken_for_the_output(tmp_
 def test_two_temp_paths_for_the_same_target_never_collide(tmp_path):
     final = tmp_path / "abc.mp3"
     assert cache.temp_path_for(final) != cache.temp_path_for(final)
+
+
+# ---------------------------------------------------------------- concurrent publishers
+
+def test_if_replace_is_refused_but_an_identical_valid_file_already_exists_the_temp_is_discarded(
+        tmp_path, monkeypatch):
+    """Content-addressed names mean 'same name' = 'same content'. On Windows a file
+    another thread is reading can't be replaced; that must not be an error."""
+    final = tmp_path / "abc.mp3"
+    final.write_bytes(b"published by another thread")
+
+    def refuse(src, dst):
+        raise PermissionError("[WinError 5] Access is denied")
+
+    monkeypatch.setattr(cache.os, "replace", refuse)
+    result = cache.atomic_write(final, lambda tmp: tmp.write_bytes(b"my copy"))
+    assert result == final
+    assert final.read_bytes() == b"published by another thread"
+    assert [p.name for p in tmp_path.iterdir()] == ["abc.mp3"]       # temp cleaned up
+
+
+def test_a_refused_replace_with_no_existing_file_is_still_an_error(tmp_path, monkeypatch):
+    def refuse(src, dst):
+        raise PermissionError("[WinError 5] Access is denied")
+
+    monkeypatch.setattr(cache.os, "replace", refuse)
+    with pytest.raises(PermissionError):
+        cache.atomic_write(tmp_path / "abc.mp3", lambda tmp: tmp.write_bytes(b"x"))
+    assert list(tmp_path.iterdir()) == []
