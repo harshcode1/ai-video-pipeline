@@ -1,7 +1,7 @@
 # Core pipeline -- everything needed to render a video.
 # Small, pure-python wheels: installs in seconds and can't fail on a compile.
-edge-tts==7.3.1          # TTS (free, no API key)
-requests==2.34.2         # Pollinations image fetches
+edge-tts==7.3.1          # TTS (free, no API key); 7.2.8 gets HTTP 403 from the speech endpoint
+requests==2.34.2         # image API calls (fal.ai / Gemini)
 pillow==12.3.0           # upscale output validation
 watchdog==6.0.0          # src/watch.py auto-rerun on input change
 

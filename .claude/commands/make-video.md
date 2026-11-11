@@ -150,10 +150,11 @@ length, style, title.
 catching a wrong voice at minute 5 instead of hour 2.
 
 If he wants changes: voice and delivery live in `src/config.py`, look lives in
-`Visuals.txt`, words live in `Script.txt`. Re-render the sample. When changing
-the look, delete only the specific stale files in `build/images/` and
-`build/images_upscaled/` — **never all of `build/`**, which is the resume cache
-and costs hours to rebuild.
+`Visuals.txt`, words live in `Script.txt`. Re-render the sample. The cache is
+by content, so only what changed is redone: an edited image prompt re-fetches just
+that picture, an edited line re-synthesizes just that line, and a changed look
+setting re-renders just the affected clips. There is nothing to delete by hand —
+and **never delete `build/`**, which holds paid images and costs hours to rebuild.
 
 ## Step 5 — Full render
 

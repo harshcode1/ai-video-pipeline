@@ -8,43 +8,10 @@ Voiceover is free and keyless. **Image generation is not free**: it needs a
 funded [fal.ai](https://fal.ai) account with the key in `FAL_KEY`, and costs
 about **$0.019 per image — roughly $1.30 for a 69-scene video**.
 
-The image provider is **pluggable** (`IMAGE_PROVIDER` in `src/config.py`).
-Two providers died under this pipeline in a single month, so switching is a
-one-line change rather than a rewrite.
-
-> **Aug 2026 — free image generation ended, twice.**
->
-> First, Pollinations (the previous keyless provider) moved to prepaid credits:
-> new prompts fail with `402 PAYMENT_REQUIRED` at a zero balance, and `flux` was
-> dropped from the anonymous model list. It had also silently capped every image
-> at 1024×576 regardless of the size requested — the real cause of the soft,
-> blurry output, since a 1080p frame needs ~3.5× that many pixels.
->
-> The switch to Google Gemini fixed the quality problem for good: images
-> generated natively at **16:9 4K (3840×2160)**, so nothing was invented and
-> nothing resampled. Real-ESRGAN became unnecessary, cutting ~50 minutes off a
-> full render.
->
-> But Google's free image tier disappeared in the same month. Its pricing page
-> now lists **"Free Tier: not available" for every image model** —
-> `gemini-3.1-flash-image`, `-flash-lite-image`, `gemini-3-pro-image`,
-> `gemini-2.5-flash-image` and Imagen 4 alike. A valid key on an unbilled
-> project isn't broken; it simply has a quota of exactly zero, and no amount of
-> retrying changes that.
->
-> **So the default moved to FLUX.2 Turbo on fal.ai**, which wins on two counts:
-> it's ~8× cheaper ($1.30 vs $10.42 per video), and it exposes a **seed**.
-> That seed matters beyond price — one fixed seed holds a single visual style
-> across all 69 scenes, which is the consistency lever that was lost when
-> Pollinations died and Google turned out to offer no equivalent.
->
-> A full survey (Aug 2026) found **no provider offering a recurring free tier
-> that also delivers native 16:9 at 1080p or above.** The free options either
-> cap below 1080p (Cloudflare flux-schnell, SiliconFlow, ModelScope) or allow
-> roughly one usable image per day (Cloudflare lucid-origin). That's a settled
-> answer, not a gap in the search.
->
-> Full post-mortem in `src/config.py`.
+The image provider is **pluggable** (`IMAGE_PROVIDER` in `src/config.py`: `fal`
+by default, `gemini` as an optional fallback), so switching is a one-line change.
+No provider offers a free tier that also gives native 16:9 at 1080p or above; see
+*Technical Decisions* below for the short history.
 
 ```
 input/Script.txt    ─┐
@@ -56,14 +23,25 @@ input/Visuals.txt   ─┴─▶ parse ─▶ TTS ─▶ timing ─▶ images �
 | Stage | Module | What it does |
 | --- | --- | --- |
 | 0. Parse | `src/parse.py` | Joins `Script.txt` + `Visuals.txt` on `MM:SS` timestamps into `build/scenes.json`. Validates that both timestamp sets match exactly. No network. |
-| 1. TTS | `src/tts.py`, `src/audio.py` | Per-line Hindi TTS via **edge-tts** (`hi-IN-SwaraNeural`), with per-line prosody from the script's `[directives]` and real inserted silence for `[pause]`. Retries with exponential backoff. |
+| 1. TTS | `src/tts.py`, `src/audio.py` | Per-line Hindi TTS via **edge-tts** (`hi-IN-SwaraNeural`), with per-line prosody from the script's `[directives]` and real inserted silence for `[pause]`. Lines are synthesized on a capped thread pool (`--tts-workers`, default 4); retries with exponential backoff. |
 | 2. Timing | `src/timing.py` | Measures true audio duration with `ffprobe` — scene length follows the *actual* voiceover, not the nominal script timestamps. |
 | 3. Images | `src/images.py` | One image per scene from the provider set in `IMAGE_PROVIDER` — by default **FLUX.2 Turbo on fal.ai** at 2048×1152 (true 16:9, above the 1080p output), throttled to 1 per 6s and cached on disk. Classifies API failures so deterministic ones (bad key, no credit, rejected request) fail immediately with the reason instead of burning six retries. Style consistency comes from a **fixed seed** plus an identical style suffix on every prompt. |
 | 4. Upscale | `src/upscale.py` | **Auto-skips.** Local Real-ESRGAN 4× is kept for the case where sources are smaller than the working resolution, but 2048×1152 already meets it, so it returns the original untouched. |
-| 5. Assemble | `src/assemble.py` | Per-scene `zoompan` motion clip → a cinematic finish filter chain → `xfade` crossfade chain → mux with two-pass EBU R128 loudness-normalized audio (`src/loudness.py`, target −14 LUFS). |
+| 5. Assemble | `src/assemble.py` | Per-scene `zoompan` motion clip (rendered several at a time, `--clip-workers`) → a cinematic finish filter chain → `xfade` crossfade chain → mux with two-pass EBU R128 loudness-normalized audio (`src/loudness.py`, target −14 LUFS). |
 
-**Every stage is idempotent and cached.** Reruns after a crash only redo what's
-missing, so a partial 69-scene render never starts over from zero.
+**Every stage is cached by content.** Each output is named by a short hash of
+everything that affects it (the text, the prompt, the voice, the seed, fps and
+filter settings, ...), e.g. `build/audio/3f9a1c...mp3`, never by scene number. A
+stage is skipped when its exact file already exists, so a crash resumes where it
+stopped, and editing the script redoes only what changed: change one line and
+only that line's speech, its clip and the final assembly re-run; insert or
+reorder scenes and nothing but the final assembly re-runs. Files are written to a
+temp name and moved into place, so a crash can't leave a half-written file that
+looks valid.
+
+Builds made by older versions left index-named files (`build/audio/03.mp3`,
+`build/images/03.jpg`). They are never used and never deleted; render.py prints a
+note when it sees them, and they are safe to remove by hand.
 
 ### The parts that took the most tuning
 
@@ -73,8 +51,7 @@ summarized away — the interesting ones:
 - **`src/config.py`** — the "looks like an AI slideshow vs. a real video" gap
   closed by four stacked filters on the *final* frame (sharpen, contrast/sat
   S-curve, vignette, temporal film grain), each A/B-picked by eye, plus
-  per-scene zoom/pan variants so 69 clips aren't mechanically identical. Also
-  carries the post-mortem on why the image provider changed.
+  per-scene zoom/pan variants so 69 clips aren't mechanically identical. 
 - **`src/images.py`** — failures are *classified* rather than blanket-retried.
   A render is a multi-hour unattended job, so retrying a deterministic failure
   six times both wastes minutes and buries the reason: bad key, no credit and
@@ -214,17 +191,19 @@ python src/render.py --indices 1,2,5,34,65
 # Full run
 python src/render.py --all
 
-# Full run without Real-ESRGAN (softer output, but no GPU or binary needed)
+# Tune the pools for one run (defaults: 4 speech lines, about half the CPU cores for clips)
+python src/render.py --all --tts-workers 2 --clip-workers 4
+
+# Skip Real-ESRGAN explicitly (rarely needed: it skips itself for full-size pictures)
 python src/render.py --all --no-upscale
 ```
 
 Optional flags: `--label` names the merged intermediates, `--out` overrides the
 output path. Output lands in `output/`; all intermediates in `build/`.
 
-**Every stage is cached, so if a run crashes, just rerun the same command** — it
-resumes rather than starting over. Don't delete `build/` to "clean up"; that's
-the resume cache, and throwing it away costs hours of re-downloading and
-re-upscaling.
+**Every stage is cached by content, so if a run crashes, just rerun the same
+command** — it resumes rather than starting over, and a finished image is never
+paid for twice. Don't delete `build/` to "clean up"; that's the cache.
 
 A full ~69-scene run takes **1–2 hours**. It used to be 1.5–3: dropping the
 15s-per-image throttle to 6s saved ~10 min, and eliminating Real-ESRGAN
@@ -244,23 +223,68 @@ whether the video actually reads as moving (mean inter-frame difference), so
 
 ## Tests
 
-Plain asserts, no pytest dependency:
-
 ```bash
-python tests/test_assemble.py   # xfade offset math (needs ffmpeg installed)
-python tests/test_images.py     # image-API error classification (no network, no ffmpeg)
+pip install -r requirements-dev.txt     # adds pytest
+python -m pytest                        # everything (needs ffmpeg for the media tests)
+python src/doctor.py                    # preflight; also runs a fast pytest selection
 ```
 
-`test_images.py` covers the failure classifier, and every case in it is a bug
-that actually shipped: a bad key arrives as HTTP **400** (not 401/403) and used
-to be retried six times under the wrong label; a rejected `mime_type` had its
-explanation discarded by `raise_for_status()`; and a zero quota was treated as a
-transient rate-limit and slept through. Each one costs minutes of a multi-hour
-render and names the wrong cause, so the classifier is tested against real
-recorded response bodies rather than trusted.
+No network and no credits are used: image and speech providers are fakes, and the
+media tests use tiny synthetic clips with real ffmpeg. The tests cover:
 
-`test_assemble.py` covers `compute_offsets()` — the xfade offset math, where a silent bug would
-cascade through every join in the render.
+- the cache: stable hashes, atomic writes, and the invalidation matrix (edit a
+  line, edit a prompt, insert, reorder, delete, change fps/seed/voice/loudness,
+  crash leftovers, legacy files), counting how often each stage really ran;
+- `parse.py` (mismatched timestamps, directives, pauses), `timing.py`, `doctor.py`;
+- the image-API retry vs fail-fast matrix for both providers, with the
+  exponential backoff checked;
+- the ffmpeg layer (argument lists only, `-nostdin`, real-duration xfade offsets,
+  explicit 48 kHz loudnorm output) and the pools (worker cap, no duplicate
+  requests, resume after a crash, fail-fast cancellation, the shared limiter).
+
+The two original files still run on their own too (`python tests/test_images.py`).
+
+## Technical Decisions
+
+**Why direct ffmpeg (no MoviePy).** Every video step is one ffmpeg command: a `zoompan` clip per scene, an `xfade` chain, a mux. MoviePy holds frames in Python memory and was leaking on long renders; a subprocess per step is simple, uses ffmpeg's own multithreading, and a failure leaves a normal stderr message. All calls go through one helper, `ffmpeg_utils.run()`: argument lists only (never a shell), `-nostdin` for ffmpeg (ffprobe has no such option, so it just gets a closed stdin), and UTF-8 decoding that can't crash on Windows. The xfade offsets are computed from the real `ffprobe` duration of each rendered clip, not the nominal one, and that math is unit-tested.
+
+**Why content-hash caching (the bug it fixed).** Outputs used to be named by scene number (`build/audio/03.mp3`, `build/images/03.jpg`), and a stage skipped any scene whose file existed. So editing the text of scene 3 kept the old voiceover, and inserting a scene at the start shifted everything by one: scene 4's narration played over scene 3's picture, with no error. Now every output is named by a short hash (SHA-256, 16 hex characters) of everything that affects it, plus a per-stage version string:
+
+| Stage | Key covers |
+|---|---|
+| speech | text, resolved prosody (rate/volume/pitch), voice |
+| scene audio | the speech key, the pause, how silence is made |
+| image | the full prompt (including your style suffix), provider, model/endpoint, size, seed, guidance, format |
+| upscaled image | the image key, upscaler settings |
+| clip | the picture's key, the narration length (to the millisecond), the zoom/pan motion, fps, zoom and filter settings, working and output resolution |
+| crossfaded video | the ordered clip keys, crossfade, fps |
+| mixed voiceover | the ordered scene-audio keys, loudness targets |
+| final file | the video key and the mix key |
+
+Changing one thing re-runs only what depends on it; this is tested with fake providers, counting real stage executions: editing a line re-runs that line's speech, its clip and the final assembly; editing an image prompt re-runs that image, its clip and the video; inserting a scene reuses every other scene; reordering re-runs only the final assembly; changing fps re-runs only the clips and what follows. The zoom/pan motion is derived from the picture's hash, not its position, so moving a scene never changes its motion (an earlier `scene index % 3` rule made every later clip change whenever a scene was inserted). Every file is written to a temp name in the same folder and moved into place with `os.replace()`, so a crash can't leave a half-written file that looks valid, and leftover temp files are ignored. Old index-named files in `build/` are never used and never deleted; they're safe to remove by hand.
+
+**Why a capped pool, a shared image limiter, and no image parallelism.** Speech lines (network-bound) and scene clips (one ffmpeg process each) are independent, so they run on a plain `ThreadPoolExecutor` with a worker cap (`TTS_WORKERS`, default 4; `CLIP_WORKERS`, default about half the CPU cores, because each ffmpeg is already multi-threaded). The first failure cancels work that hasn't started, lets running work finish, and re-raises the original error; the cache stays consistent because writes are atomic. Identical lines or clips are made once, and a finished item is never requested again, which matters for paid calls. Images stay sequential on purpose: the provider limit is one request per 6 seconds, so a pool could not make them faster and would only risk the limit. The limiter is still thread-safe and shared by every provider object (callers reserve the next free slot under a lock, then sleep outside it), so the limit can't be broken by accident later. Running things concurrently found a real Windows-only race: two threads creating the same silence clip made `os.replace` fail while another thread's ffmpeg was reading the file. It's fixed twice over: that creation is single-flight, and `atomic_write` accepts an identical, already-published content-addressed file.
+
+**Measured results, and what was not measured.** Speech synthesis with the real edge-tts service: 12 fixed Hindi lines, an empty cache every run, 3 runs per setting in alternating order, wall-clock around the stage only (`bench/bench_parallel.py`; results in `bench/results.md`), on an Intel Core Ultra 7 155H laptop. **15.86 s (median, 1 worker) to 3.91 s (4 workers), about 4x.** Raw runs: 24.61, 15.47, 15.86 s and 3.79, 4.09, 3.91 s. Network latency varies between runs (the first sequential run was slower), so read it as "roughly 4x faster here", not a promise. A second run with a fake provider that just sleeps 0.5 s per line (labelled *pool only*: it measures the pool, not any service) went from 6.1 s to 1.58 s. **Clip rendering: no measured speedup yet.** The first attempt was invalid (other work was running on the machine) and its numbers were discarded; the benchmark must be rerun on an idle machine. Images are not benchmarked: they stay sequential behind the 1-request-per-6-seconds limit.
+
+**Retry vs fail-fast.** A render is a long unattended job, so retrying a failure that can't succeed wastes minutes and hides the reason. Rate limits (429), server errors (5xx) and network errors are retried with exponential backoff (about 3 s, 6 s, 12 s, ... plus jitter, up to 6 attempts). A bad key (401/403), no credit (402, or a message about the balance, checked before the key so it isn't misreported as a bad key), and a rejected request (400/422, with the response body kept because it names the field) stop immediately. Both providers follow the same rules and the matrix is tested.
+
+**Two-pass loudnorm.** The narration is normalized once, after all scenes are joined, to -14 LUFS (the YouTube target). Pass one measures the file; pass two applies exactly those measurements in linear mode, so the whole voiceover moves by one gain instead of being compressed scene by scene. The output sample rate is set explicitly (48 kHz) because loudnorm resamples internally. The end-to-end test measures the finished file's loudness with a different ffmpeg filter (ebur128) to confirm it lands within 1 LU of -14.
+
+**Why the image provider is pluggable.** Two image providers stopped being free in the same month (2026): the keyless one moved to prepaid credits and capped images at 1024x576, and Google removed its free image tier. The default is now FLUX.2 Turbo on fal.ai (about $0.019 per 2048x1152 image, with a seed that keeps one visual style across scenes), and `gemini` remains a selectable fallback. Switching is one setting, `IMAGE_PROVIDER` in `src/config.py`. Always request explicit pixel sizes, never a named preset such as `landscape_16_9`, which on a 1-megapixel model means 1024x576, below the 1080p output.
+
+**Known limitations.**
+- Images are paid per request (about $1.30 for 69 scenes) and sequential, so a full video takes at least 7 minutes of image time alone.
+- The cache key can't see changes on the provider's side (a model updated behind the same endpoint, or a changed neural voice); bump the stage version in `src/cache.py` or clear that stage's files to force a re-run.
+- Old index-named files from earlier versions are left in `build/` and never reused or deleted.
+- TTS depends on the unofficial Edge speech endpoint, which Microsoft has broken for old library versions before (edge-tts 7.2.8 returned HTTP 403; 7.3.1 works).
+- Clips and the xfade chain are CPU-bound; the xfade chain is one ffmpeg process and does not parallelize.
+- Image sources must be at least as wide as `SCALE_PRE_ZOOMPAN_WIDTH`, or the Real-ESRGAN fallback needs a Vulkan GPU and a separate binary (not needed with the default provider).
+
+**Next steps (not done yet).**
+- Rerun the clip-rendering benchmark on an idle machine and report the real number.
+- An end-to-end test (synthetic inputs, real 1080p ffmpeg): check the output's size, length, audio and loudness, and measure any audio/video drift from frame rounding across scenes. Not run yet, so no drift claim is made.
+- A `--plan` dry run that prints which stages would re-run and why, with the estimated image cost, without any API call.
 
 ## Repository layout
 
@@ -269,7 +293,8 @@ CLAUDE.md      auto-loaded context for Claude Code
 .claude/       /make-video workflow command
 src/           pipeline modules (config.py is the single source of truth)
 src/doctor.py  environment preflight check
-tests/         unit tests
+tests/         pytest suite (no network, no credits)
+bench/         parallel-stage benchmark script + results
 input/         Script.txt + Visuals.txt  (gitignored -- see input/README.md)
 build/         all intermediates: audio, images, upscales, scene clips (gitignored)
 output/        finished videos (gitignored)

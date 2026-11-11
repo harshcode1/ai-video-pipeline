@@ -78,8 +78,7 @@ def check_deps():
 
 
 def check_image_api():
-    """The image provider needs a key since Aug 2026 (Pollinations went paid --
-    see config.py). Without it a render dies at stage 3, after the TTS work."""
+    """The image provider needs an API key (image generation is paid). Without it a render dies at stage 3, after the TTS work."""
     import os
     import config
     signup = {"fal": "https://fal.ai/dashboard/keys",
@@ -178,13 +177,13 @@ def check_upscaler(test_upscale=False):
     import config
     exe = config.REALESRGAN_EXE
     if not exe.exists():
-        # Not a problem any more: images arrive at 3840x2160, so upscale.py
+        # Not a problem any more: images arrive at 2048 px wide (the working width), so upscale.py
         # auto-skips regardless of whether this binary exists.
-        report(PASS, "Real-ESRGAN binary", "absent, and not needed at 4K sources")
+        report(PASS, "Real-ESRGAN binary", "absent, and not needed: sources already meet the working width")
         return
     models = exe.parent / "models"
     if not (models / "realesrgan-x4plus.bin").exists():
-        report(PASS, "Real-ESRGAN models", "incomplete, and not needed at 4K sources")
+        report(PASS, "Real-ESRGAN models", "incomplete, and not needed: sources already meet the working width")
         return
     report(PASS, "Real-ESRGAN binary", str(exe))
 
@@ -208,7 +207,7 @@ def check_upscaler(test_upscale=False):
         report(PASS, "Real-ESRGAN GPU test", f"{out.stat().st_size:,} bytes from {Path(sample).name}")
     except Exception as e:
         report(WARN, "Real-ESRGAN GPU test", f"failed ({type(e).__name__}) -- harmless, "
-                                             f"it is skipped at 4K anyway. Detail: {str(e)[:160]}")
+                                             f"it is skipped for full-size sources anyway. Detail: {str(e)[:160]}")
     finally:
         if out.exists():
             out.unlink()
@@ -269,7 +268,7 @@ def main():
             print(f"  - {label}: {detail}")
         return 1
 
-    # No --no-upscale flag is suggested any more: sources arrive at 3840x2160
+    # No --no-upscale flag is suggested any more: sources arrive at the working width
     # and upscale.py skips itself, whether or not the binary is installed.
     print("\nReady to render.")
     if not inputs_ok:

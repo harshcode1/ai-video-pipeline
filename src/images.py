@@ -3,20 +3,16 @@ with make_provider().
 
   FalProvider     -- DEFAULT. FLUX.2 Turbo on fal.ai. 2048x1152, seeded,
                      ~$0.019/image.
-  GeminiProvider  -- Fallback / quality benchmark. Up to 4K, no seed,
-                     ~5-8x the price.
+  GeminiProvider  -- Optional fallback. Up to 4K, no seed, ~5-8x the price.
 
-This module is deliberately over-abstracted for its size. Two providers died
-inside the same month (Pollinations went paid; Google deleted its free image
-tier), so the swap cost matters more here than anywhere else in the pipeline.
+Image generation is paid (no provider has a free tier that also gives native
+16:9 at 1080p+), and providers have disappeared before, so the provider is one
+setting in config.py.
 
 Every provider classifies failures into fail-fast (bad key, no credit,
-malformed request) vs. worth-retrying (rate limit, 5xx). That distinction is
-the whole point: a render is a multi-hour unattended job, so retrying a
-deterministic failure six times just wastes minutes and buries the reason.
-
-PollinationsProvider and CloudflareWorkersAIProvider below are DEAD CODE kept
-as a record of what was tried and why it was rejected.
+malformed request) vs. worth-retrying (rate limit, 5xx, network). That
+distinction is the point: a render is a multi-hour unattended job, so retrying
+a deterministic failure six times just wastes minutes and buries the reason.
 """
 import abc
 import base64
@@ -25,7 +21,6 @@ import random
 import re
 import time
 from pathlib import Path
-from urllib.parse import quote
 
 import requests
 
@@ -70,7 +65,7 @@ class ImageRequestRejectedError(RuntimeError):
 class ImageQuotaError(RuntimeError):
     """HTTP 429 where the quota for this model is structurally ZERO rather
     than temporarily used up -- i.e. the account has no billing enabled and
-    image generation has no free tier (see the note in config.py).
+    image generation has no free tier.
 
     Distinct from an ordinary rate-limit 429, which IS transient and is still
     retried. Waiting never clears this one, so surface the billing fix instead
@@ -152,7 +147,7 @@ def _extract_image_bytes(payload) -> bytes | None:
 
 
 class GeminiProvider(ImageProvider):
-    """Google Gemini image generation -- free tier, key from Google AI Studio.
+    """Google Gemini image generation (paid; billing must be enabled on the key's project).
 
     Generates natively at 16:9 / 4K (3840x2160), which is why the render no
     longer needs Real-ESRGAN: the source already exceeds the 1080p output.
@@ -334,8 +329,8 @@ class FalProvider(ImageProvider):
     """Black Forest Labs FLUX.2 Turbo, hosted on fal.ai. The default.
 
     Chosen over Gemini on two counts, not one: ~8x cheaper (~$1.30 vs $10.42
-    for a 69-scene video), and it exposes a SEED, which restores the
-    cross-scene style consistency that was lost when Pollinations died.
+    for a 69-scene video), and it exposes a SEED, which keeps one visual
+    style across all the scenes.
 
     Generates 2048x1152 -- true 16:9 and the largest this model allows. That
     is above the 1920x1080 output, so nothing is invented; only the last part
@@ -448,58 +443,6 @@ class FalProvider(ImageProvider):
                 print(f"    Image attempt {attempt}/{config.IMAGE_MAX_RETRIES} failed ({e}); retrying in {sleep_s:.1f}s")
                 time.sleep(sleep_s)
         raise RuntimeError(f"Image fetch failed after {config.IMAGE_MAX_RETRIES} attempts: {last_err}")
-
-
-class PollinationsProvider(ImageProvider):
-    """DEAD as of Aug 2026 -- kept only to document what was tried.
-
-    Two independent reasons not to bring this back (both verified live):
-      * It bills now. New prompts return 402 PAYMENT_REQUIRED with a zero
-        balance, and `flux` is gone from the anonymous model list.
-      * Even when it worked it force-capped output at 1024x576 no matter what
-        was requested, which was the actual source of the blurry images.
-
-    Deliberately raises instead of running, so nobody wires it back in by
-    accident after seeing a cached prompt appear to succeed.
-    """
-
-    MODEL = "flux"
-    SEED = 424242
-    MIN_INTERVAL_SECONDS = 15.0
-
-    def __init__(self):
-        raise NotImplementedError(
-            "PollinationsProvider is retired: the service went paid and only ever "
-            "returned 1024x576. Use GeminiProvider."
-        )
-
-    def fetch(self, prompt: str, out_path: Path) -> None:
-        # Reference only -- this is the URL shape that used to work.
-        encoded = quote(prompt, safe="")
-        raise NotImplementedError(
-            f"https://image.pollinations.ai/prompt/{encoded}"
-            f"?model={self.MODEL}&seed={self.SEED}&nologo=true&width=1920&height=1080"
-        )
-
-
-class CloudflareWorkersAIProvider(ImageProvider):
-    """STUB -- evaluated as a Pollinations replacement and REJECTED.
-
-    Free tier is genuinely generous (10k neurons/day, ~230 flux images), but
-    @cf/black-forest-labs/flux-1-schnell exposes no width/height parameter and
-    emits square images. Cropping a square to 16:9 lands right back at
-    1024x576 -- i.e. it would fix the outage but not the blurriness, which was
-    the whole point. Documented here so it doesn't get re-proposed.
-    """
-
-    def __init__(self, account_id: str | None = None, api_token: str | None = None):
-        raise NotImplementedError(
-            "CloudflareWorkersAIProvider is a rejected stub: square-only output "
-            "means no 16:9 resolution gain over the old Pollinations images."
-        )
-
-    def fetch(self, prompt: str, out_path: Path) -> None:
-        raise NotImplementedError
 
 
 PROVIDERS = {
