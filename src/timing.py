@@ -3,7 +3,6 @@ own [MM:SS] markers -- those are only used here for the comparison table,
 never to drive scene length. No forced alignment (WhisperX/aeneas/MFA):
 per-line TTS makes drift impossible by construction."""
 import json
-import subprocess
 
 import config
 import ffmpeg_utils
@@ -15,7 +14,7 @@ def probe_duration(path) -> float:
         "-show_entries", "format=duration",
         "-of", "json", str(path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = ffmpeg_utils.run(cmd)
     if result.returncode != 0:
         raise RuntimeError(f"ffprobe failed on {path}: {result.stderr}")
     data = json.loads(result.stdout)
@@ -59,6 +58,6 @@ def concat_audio_files(paths: list, out_path) -> None:
     n = len(paths)
     filter_str = "".join(f"[{i}:a]" for i in range(n)) + f"concat=n={n}:v=0:a=1[aout]"
     cmd = [ffmpeg_utils.FFMPEG, "-y", *inputs, "-filter_complex", filter_str, "-map", "[aout]", str(out_path)]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = ffmpeg_utils.run(cmd)
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg audio concat failed: {result.stderr}")

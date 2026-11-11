@@ -12,7 +12,6 @@ tests/test_assemble.py before ever touching a real ffmpeg process, since a
 bug here cascades through all 69 joins.
 """
 import os
-import subprocess
 import tempfile
 from pathlib import Path
 
@@ -104,8 +103,7 @@ def render_scene_clip(scene: dict) -> Path:
     source = config.ROOT / scene["source_file"]
 
     def render(tmp: Path) -> None:
-        result = subprocess.run(_zoompan_command(source, dur, source_key, tmp),
-                                capture_output=True, text=True)
+        result = ffmpeg_utils.run(_zoompan_command(source, dur, source_key, tmp))
         if result.returncode != 0:
             raise RuntimeError(f"ffmpeg scene render failed for scene {scene['index']}: "
                                f"{result.stderr[-2000:]}")
@@ -146,7 +144,7 @@ def build_xfade_filter(clip_durations: list, fade: float = config.CROSSFADE_SECO
 def xfade_chain(clip_paths: list, out_path: Path) -> None:
     if len(clip_paths) == 1:
         cmd = [ffmpeg_utils.FFMPEG, "-y", "-i", str(clip_paths[0]), "-c", "copy", str(out_path)]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = ffmpeg_utils.run(cmd)
         if result.returncode != 0:
             raise RuntimeError(f"ffmpeg single-clip copy failed: {result.stderr[-2000:]}")
         return
@@ -175,7 +173,7 @@ def xfade_chain(clip_paths: list, out_path: Path) -> None:
             "-c:v", CLIP_ENCODING["codec"], "-pix_fmt", CLIP_ENCODING["pix_fmt"], "-r", str(config.FPS),
             str(out_path),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = ffmpeg_utils.run(cmd)
         if result.returncode != 0:
             raise RuntimeError(f"ffmpeg xfade chain failed: {result.stderr[-3000:]}")
     finally:
@@ -205,6 +203,6 @@ def mux_audio(video_path: Path, audio_path: Path, out_path: Path) -> None:
         "-shortest",
         str(out_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = ffmpeg_utils.run(cmd)
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg mux failed: {result.stderr[-2000:]}")

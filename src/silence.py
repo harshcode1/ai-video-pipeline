@@ -1,6 +1,5 @@
 """Generate real silence clips via ffmpeg anullsrc (edge-tts/SSML <break>
 cannot produce clean silence -- <break> is stripped by the Edge endpoint)."""
-import subprocess
 from pathlib import Path
 
 import cache
@@ -30,7 +29,7 @@ def get_silence(ms: int) -> Path:
             "-q:a", str(SILENCE_PARAMS["mp3_quality"]),
             str(tmp),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = ffmpeg_utils.run(cmd)
         if result.returncode != 0:
             raise RuntimeError(f"ffmpeg failed generating silence: {result.stderr}")
 

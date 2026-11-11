@@ -1,6 +1,5 @@
 """Keys for the assembly stages (video chain, mixed audio, final mux), and the
 xfade filter script no longer being a shared fixed file."""
-import subprocess
 import threading
 
 import pytest
@@ -65,10 +64,10 @@ def test_final_key_follows_both_inputs_and_the_stage_version(monkeypatch):
 # ------------------------------------------------------------------ xfade filter script
 
 def make_clip(path, seconds, rate=10, color="testsrc"):
-    subprocess.run([ffmpeg_utils.FFMPEG, "-y", "-v", "error", "-nostdin", "-f", "lavfi",
-                    "-i", f"{color}=size=160x90:rate={rate}:duration={seconds}",
-                    "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path)],
-                   check=True, capture_output=True)
+    result = ffmpeg_utils.run([ffmpeg_utils.FFMPEG, "-y", "-v", "error", "-f", "lavfi",
+                               "-i", f"{color}=size=160x90:rate={rate}:duration={seconds}",
+                               "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path)])
+    assert result.returncode == 0, result.stderr
 
 
 @requires_ffmpeg

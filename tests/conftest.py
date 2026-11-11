@@ -70,13 +70,12 @@ def project(tmp_path, monkeypatch):
 
 def make_tone(path, seconds: float, freq: int = 440, amplitude: float = 0.5) -> None:
     """A real mp3 of a sine tone, via ffmpeg. Stands in for synthesized speech."""
-    import subprocess
-
     import ffmpeg_utils
-    cmd = [ffmpeg_utils.FFMPEG, "-y", "-v", "error", "-nostdin", "-f", "lavfi",
+    cmd = [ffmpeg_utils.FFMPEG, "-y", "-v", "error", "-f", "lavfi",
            "-i", f"sine=frequency={freq}:sample_rate=24000:duration={seconds}",
            "-af", f"volume={amplitude}", "-q:a", "5", str(path)]
-    subprocess.run(cmd, check=True, capture_output=True)
+    result = ffmpeg_utils.run(cmd)
+    assert result.returncode == 0, result.stderr
 
 
 def make_jpeg(path, seed: int = 0, size=(256, 144)) -> None:
@@ -119,14 +118,13 @@ def scene(i, text="line", emotion=None, pause_ms=0, prompt=None):
 def probe_video(path) -> dict:
     """width, height, duration (s), fps of the first video stream, via ffprobe."""
     import json
-    import subprocess
 
     import ffmpeg_utils
-    out = subprocess.run(
+    result = ffmpeg_utils.run(
         [ffmpeg_utils.FFPROBE, "-v", "error", "-select_streams", "v:0", "-show_entries",
-         "stream=width,height,r_frame_rate:format=duration", "-of", "json", str(path)],
-        capture_output=True, text=True, check=True).stdout
-    data = json.loads(out)
+         "stream=width,height,r_frame_rate:format=duration", "-of", "json", str(path)])
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
     num, den = data["streams"][0]["r_frame_rate"].split("/")
     return {"width": data["streams"][0]["width"], "height": data["streams"][0]["height"],
             "fps": int(num) / int(den), "duration": float(data["format"]["duration"])}

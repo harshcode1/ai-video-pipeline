@@ -13,12 +13,12 @@ The code below is kept intact and working for the case where a future provider
 returns something smaller again.
 """
 import random
-import subprocess
 import time
 from pathlib import Path
 
 import cache
 import config
+import ffmpeg_utils
 
 # Part of the upscaled picture's cache key (see upscale_key).
 UPSCALER_SETTINGS = {"model": "realesrgan-x4plus", "scale": 4}
@@ -95,7 +95,7 @@ def upscale(in_path: Path, out_path: Path) -> Path:
             "-n", "realesrgan-x4plus",
             "-t", str(tile),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(config.REALESRGAN_EXE.parent))
+        result = ffmpeg_utils.run(cmd, cwd=str(config.REALESRGAN_EXE.parent))
         if result.returncode == 0 and _is_valid_output(out_path):
             return out_path
 
