@@ -1,7 +1,11 @@
 """Single source of truth for paths, voice, and prosody config."""
+import os
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+# AVP_ROOT redirects every path (tests and one-off runs use it so they never write
+# into the real build/ folder). Importing this module does not touch the disk;
+# entry points call ensure_dirs().
+ROOT = Path(os.environ.get("AVP_ROOT") or Path(__file__).resolve().parent.parent)
 
 INPUT_DIR = ROOT / "input"
 SCRIPT_FILE = INPUT_DIR / "Script.txt"
@@ -21,8 +25,10 @@ FINAL_VIDEO = OUTPUT_DIR / "final.mp4"
 TOOLS_DIR = ROOT / "tools"
 REALESRGAN_EXE = TOOLS_DIR / "realesrgan-ncnn-vulkan" / "realesrgan-ncnn-vulkan.exe"
 
-for d in (AUDIO_DIR, IMAGES_DIR, IMAGES_UPSCALED_DIR, SCENES_DIR, OUTPUT_DIR):
-    d.mkdir(parents=True, exist_ok=True)
+def ensure_dirs() -> None:
+    """Create the working folders. Called by the entry points, never at import."""
+    for d in (AUDIO_DIR, IMAGES_DIR, IMAGES_UPSCALED_DIR, SCENES_DIR, OUTPUT_DIR):
+        d.mkdir(parents=True, exist_ok=True)
 
 # --- TTS ---
 TTS_VOICE = "hi-IN-SwaraNeural"

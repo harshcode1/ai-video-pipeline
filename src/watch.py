@@ -63,6 +63,7 @@ class InputHandler(FileSystemEventHandler):
 
 
 def main():
+    config.ensure_dirs()
     config.INPUT_DIR.mkdir(parents=True, exist_ok=True)
     handler = InputHandler()
     observer = Observer()

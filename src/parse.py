@@ -157,6 +157,7 @@ def _force_utf8_stdout():
 
 def main():
     _force_utf8_stdout()
+    config.ensure_dirs()
     meta, scenes = build_scenes()
 
     config.SCENES_JSON.write_text(
