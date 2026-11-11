@@ -31,6 +31,13 @@ import requests
 
 import cache
 import config
+from ratelimit import RateLimiter
+
+
+# ONE limiter shared by every provider object and every thread: the provider's
+# limit is per account, not per Python object. Images stay sequential today, but if
+# they were ever fetched from a pool this is what keeps the limit from being broken.
+IMAGE_LIMITER = RateLimiter(lambda: config.IMAGE_MIN_INTERVAL_SECONDS)
 
 
 class ImageProvider(abc.ABC):
@@ -151,7 +158,7 @@ class GeminiProvider(ImageProvider):
     longer needs Real-ESRGAN: the source already exceeds the 1080p output.
     """
 
-    def __init__(self, api_key: str | None = None):
+    def __init__(self, api_key: str | None = None, limiter: RateLimiter | None = None):
         self.api_key = api_key or os.environ.get(config.GEMINI_API_KEY_ENV, "").strip()
         if not self.api_key:
             raise MissingAPIKeyError(
@@ -160,7 +167,7 @@ class GeminiProvider(ImageProvider):
                 f"  PowerShell (this session):  $env:{config.GEMINI_API_KEY_ENV} = 'your-key'\n"
                 f"  PowerShell (permanent):     setx {config.GEMINI_API_KEY_ENV} \"your-key\""
             )
-        self._last_request_time = 0.0
+        self._limiter = limiter or IMAGE_LIMITER
         self.mime_type = config.IMAGE_MIME_TYPE
         self._tried_mime_types = {self.mime_type}
 
@@ -173,11 +180,6 @@ class GeminiProvider(ImageProvider):
             "image_size": config.IMAGE_SIZE,
             "mime_type": config.IMAGE_MIME_TYPE,   # no seed: the API exposes none
         }
-
-    def _throttle(self):
-        wait = config.IMAGE_MIN_INTERVAL_SECONDS - (time.time() - self._last_request_time)
-        if wait > 0:
-            time.sleep(wait)
 
     def _switch_mime_type(self) -> bool:
         """Move to the next candidate mime type. Returns False once exhausted."""
@@ -264,8 +266,7 @@ class GeminiProvider(ImageProvider):
                     "image_size": config.IMAGE_SIZE,
                 },
             }
-            self._throttle()
-            self._last_request_time = time.time()
+            self._limiter.wait()
             try:
                 resp = requests.post(config.IMAGE_ENDPOINT, json=body, headers=headers, timeout=300)
                 self._check_response(resp)
@@ -341,7 +342,7 @@ class FalProvider(ImageProvider):
     of each zoom crops in past 1:1 (see ZOOM_MAX in config.py).
     """
 
-    def __init__(self, api_key: str | None = None):
+    def __init__(self, api_key: str | None = None, limiter: RateLimiter | None = None):
         self.api_key = api_key or os.environ.get(config.FAL_API_KEY_ENV, "").strip()
         if not self.api_key:
             raise MissingAPIKeyError(
@@ -350,7 +351,7 @@ class FalProvider(ImageProvider):
                 f"  PowerShell (this session):  $env:{config.FAL_API_KEY_ENV} = 'your-key'\n"
                 f"  PowerShell (permanent):     setx {config.FAL_API_KEY_ENV} \"your-key\""
             )
-        self._last_request_time = 0.0
+        self._limiter = limiter or IMAGE_LIMITER
 
     def fingerprint(self) -> dict:
         return {
@@ -363,11 +364,6 @@ class FalProvider(ImageProvider):
             "safety_checker": config.FAL_ENABLE_SAFETY_CHECKER,
             "seed": config.IMAGE_SEED,
         }
-
-    def _throttle(self):
-        wait = config.IMAGE_MIN_INTERVAL_SECONDS - (time.time() - self._last_request_time)
-        if wait > 0:
-            time.sleep(wait)
 
     def _check_response(self, resp) -> None:
         if resp.status_code == 200:
@@ -429,8 +425,7 @@ class FalProvider(ImageProvider):
 
         last_err = None
         for attempt in range(1, config.IMAGE_MAX_RETRIES + 1):
-            self._throttle()
-            self._last_request_time = time.time()
+            self._limiter.wait()
             try:
                 resp = requests.post(config.FAL_ENDPOINT, json=body, headers=headers, timeout=300)
                 self._check_response(resp)
