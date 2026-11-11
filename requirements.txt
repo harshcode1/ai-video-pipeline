@@ -1,6 +1,6 @@
 # Core pipeline -- everything needed to render a video.
 # Small, pure-python wheels: installs in seconds and can't fail on a compile.
-edge-tts==7.2.8          # TTS (free, no API key)
+edge-tts==7.3.1          # TTS (free, no API key)
 requests==2.34.2         # Pollinations image fetches
 pillow==12.3.0           # upscale output validation
 watchdog==6.0.0          # src/watch.py auto-rerun on input change
