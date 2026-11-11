@@ -29,12 +29,21 @@ from urllib.parse import quote
 
 import requests
 
+import cache
 import config
 
 
 class ImageProvider(abc.ABC):
     @abc.abstractmethod
     def fetch(self, prompt: str, out_path: Path) -> None:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def fingerprint(self) -> dict:
+        """Every setting that can change the picture this provider returns for a
+        given prompt (model, size, seed, ...) -- but never the API key. Part of
+        the image's cache key, so changing a setting re-generates instead of
+        silently reusing pictures made with the old one."""
         raise NotImplementedError
 
 
@@ -154,6 +163,16 @@ class GeminiProvider(ImageProvider):
         self._last_request_time = 0.0
         self.mime_type = config.IMAGE_MIME_TYPE
         self._tried_mime_types = {self.mime_type}
+
+    def fingerprint(self) -> dict:
+        return {
+            "provider": "gemini",
+            "endpoint": config.IMAGE_ENDPOINT,
+            "model": config.IMAGE_MODEL,
+            "aspect_ratio": config.IMAGE_ASPECT_RATIO,
+            "image_size": config.IMAGE_SIZE,
+            "mime_type": config.IMAGE_MIME_TYPE,   # no seed: the API exposes none
+        }
 
     def _throttle(self):
         wait = config.IMAGE_MIN_INTERVAL_SECONDS - (time.time() - self._last_request_time)
@@ -333,6 +352,18 @@ class FalProvider(ImageProvider):
             )
         self._last_request_time = 0.0
 
+    def fingerprint(self) -> dict:
+        return {
+            "provider": "fal",
+            "endpoint": config.FAL_ENDPOINT,
+            "width": config.FAL_IMAGE_WIDTH,
+            "height": config.FAL_IMAGE_HEIGHT,
+            "output_format": config.FAL_OUTPUT_FORMAT,
+            "guidance_scale": config.FAL_GUIDANCE_SCALE,
+            "safety_checker": config.FAL_ENABLE_SAFETY_CHECKER,
+            "seed": config.IMAGE_SEED,
+        }
+
     def _throttle(self):
         wait = config.IMAGE_MIN_INTERVAL_SECONDS - (time.time() - self._last_request_time)
         if wait > 0:
@@ -494,6 +525,12 @@ def make_provider(name: str | None = None) -> ImageProvider:
             f"Valid options: {', '.join(sorted(PROVIDERS))}"
         )
     return PROVIDERS[name]()
+
+
+def image_key(prompt: str, provider: ImageProvider) -> str:
+    """Cache key for one picture: the full prompt (including the style suffix)
+    plus every provider setting that can change the result."""
+    return cache.short_hash(cache.STAGE_VERSIONS["image"], prompt, provider.fingerprint())
 
 
 def get_image(scene: dict, provider: ImageProvider) -> Path:
