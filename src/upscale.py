@@ -2,15 +2,11 @@
 no PyTorch/CUDA dependency, runs on any Vulkan-capable GPU including Intel
 integrated/Arc). Zero-cost, no API, no account.
 
-LARGELY HISTORICAL as of Aug 2026: this existed because Pollinations silently
-capped every image at 1024x576 regardless of requested width/height, and
-bicubic-upscaling that to 1080p was the real source of the soft look --
-Real-ESRGAN reconstructed plausible detail instead of just blurring pixels.
-
-Images now generate natively at 3840x2160, so get_upscaled_image() detects
-that the source already meets the working resolution and returns it untouched.
-The code below is kept intact and working for the case where a future provider
-returns something smaller again.
+Rarely used now: the default image provider (fal) generates 2048x1152, which already
+meets the working resolution of the zoompan stage (config.SCALE_PRE_ZOOMPAN_WIDTH), so
+get_upscaled_image() detects that and returns the source untouched. The code is kept
+working for a provider that returns smaller images (e.g. 1024x576 sources, where
+Real-ESRGAN reconstructs plausible detail instead of just blurring pixels).
 """
 import random
 import time
