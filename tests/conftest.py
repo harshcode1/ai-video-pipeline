@@ -114,3 +114,19 @@ def scene(i, text="line", emotion=None, pause_ms=0, prompt=None):
     """A minimal scene dict as parse.build_scenes() would make (keys are by content now)."""
     return {"index": i, "timestamp": f"00:{i:02d}", "seconds": i, "text": text, "emotion": emotion,
             "pause_ms": pause_ms, "raw_directives": [], "image_prompt": prompt or f"prompt {i}"}
+
+
+def probe_video(path) -> dict:
+    """width, height, duration (s), fps of the first video stream, via ffprobe."""
+    import json
+    import subprocess
+
+    import ffmpeg_utils
+    out = subprocess.run(
+        [ffmpeg_utils.FFPROBE, "-v", "error", "-select_streams", "v:0", "-show_entries",
+         "stream=width,height,r_frame_rate:format=duration", "-of", "json", str(path)],
+        capture_output=True, text=True, check=True).stdout
+    data = json.loads(out)
+    num, den = data["streams"][0]["r_frame_rate"].split("/")
+    return {"width": data["streams"][0]["width"], "height": data["streams"][0]["height"],
+            "fps": int(num) / int(den), "duration": float(data["format"]["duration"])}
