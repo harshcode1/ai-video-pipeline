@@ -9,7 +9,18 @@ from pathlib import Path
 
 import edge_tts
 
+import cache
 import config
+
+
+def resolved_prosody(emotion: str | None) -> dict:
+    """The rate/volume/pitch actually sent to the voice for this emotion, with
+    defaults filled in. The cache key uses this, so editing a prosody value in
+    config.py re-synthesizes exactly the scenes that use it."""
+    prosody = config.EMOTION_PROSODY.get(emotion, config.DEFAULT_PROSODY)
+    return {"rate": prosody.get("rate", "+0%"),
+            "volume": prosody.get("volume", "+0%"),
+            "pitch": prosody.get("pitch", "+0Hz")}
 
 
 class TTSProvider(abc.ABC):
@@ -18,16 +29,29 @@ class TTSProvider(abc.ABC):
         """Synthesize `text` with prosody derived from `emotion` to out_path (mp3)."""
         raise NotImplementedError
 
+    @abc.abstractmethod
+    def fingerprint(self) -> dict:
+        """Provider settings that change the audio (e.g. the voice). Part of the cache key."""
+        raise NotImplementedError
+
+
+def speech_key(text: str, emotion: str | None, provider: TTSProvider) -> str:
+    """Cache key for one line of synthesized speech. Deliberately excludes any
+    pause: adding silence must not force a pointless re-synthesis."""
+    return cache.short_hash(cache.STAGE_VERSIONS["tts"], text, resolved_prosody(emotion),
+                            provider.fingerprint())
+
 
 class EdgeTTSProvider(TTSProvider):
     def __init__(self, voice: str = config.TTS_VOICE):
         self.voice = voice
 
+    def fingerprint(self) -> dict:
+        return {"provider": "edge-tts", "voice": self.voice}
+
     def synthesize(self, text: str, emotion: str | None, out_path: Path) -> None:
-        prosody = config.EMOTION_PROSODY.get(emotion, config.DEFAULT_PROSODY)
-        rate = prosody.get("rate", "+0%")
-        volume = prosody.get("volume", "+0%")
-        pitch = prosody.get("pitch", "+0Hz")
+        prosody = resolved_prosody(emotion)
+        rate, volume, pitch = prosody["rate"], prosody["volume"], prosody["pitch"]
 
         last_err = None
         for attempt in range(1, config.TTS_MAX_RETRIES + 1):
@@ -64,6 +88,9 @@ class AzureTTSProvider(TTSProvider):
 
     def __init__(self, voice: str = config.TTS_VOICE, speech_key: str | None = None, region: str | None = None):
         raise NotImplementedError("AzureTTSProvider is a stub. Implement when swapping off edge-tts.")
+
+    def fingerprint(self) -> dict:
+        raise NotImplementedError
 
     def synthesize(self, text: str, emotion: str | None, out_path: Path) -> None:
         raise NotImplementedError

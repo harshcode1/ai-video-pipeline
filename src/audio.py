@@ -1,13 +1,20 @@
-"""Per-scene audio build: [silence if pause_ms>0] + [TTS speech] -> build/audio/NN.mp3.
-Resumable: skips any stage whose output file already exists."""
+"""Per-scene audio build: [silence if pause_ms>0] + [TTS speech] -> one mp3.
+
+Files are named by a hash of their content (see cache.py), not by scene number:
+the speech file by what was said and how, the scene file by that plus the pause.
+So editing one line re-synthesizes one line, and inserting or reordering scenes
+re-synthesizes nothing. Resumable: a stage is skipped when its output exists.
+"""
 import shutil
 import subprocess
 from pathlib import Path
 
+import cache
 import config
 import ffmpeg_utils
+import silence
 from silence import get_silence
-from tts import TTSProvider
+from tts import TTSProvider, speech_key
 
 
 def _concat_two(a: Path, b: Path, out_path: Path) -> None:
@@ -25,22 +32,37 @@ def _concat_two(a: Path, b: Path, out_path: Path) -> None:
         raise RuntimeError(f"ffmpeg concat failed: {result.stderr}")
 
 
+def audio_key(scene: dict, provider: TTSProvider) -> str:
+    """Key of the finished scene audio: the speech plus the pause in front of it."""
+    pause = scene["pause_ms"]
+    return cache.short_hash(cache.STAGE_VERSIONS["audio"],
+                            speech_key(scene["text"], scene["emotion"], provider),
+                            pause, silence.SILENCE_PARAMS if pause else None)
+
+
 def build_scene_audio(scene: dict, provider: TTSProvider) -> Path:
-    final_path = config.ROOT / scene["audio_file"]
-    if final_path.exists() and final_path.stat().st_size > 0:
+    akey = audio_key(scene, provider)
+    skey = speech_key(scene["text"], scene["emotion"], provider)
+    final_path = config.AUDIO_DIR / f"{akey}.mp3"
+    scene["audio_key"] = akey
+    scene["audio_file"] = final_path.relative_to(config.ROOT).as_posix()
+
+    if cache.is_valid(final_path):
         return final_path
 
-    speech_path = config.AUDIO_DIR / f"{scene['index']:02d}_speech.mp3"
-    if not speech_path.exists() or speech_path.stat().st_size == 0:
-        print(f"  [TTS] scene {scene['index']:02d} ({scene['timestamp']}) emotion={scene['emotion'] or 'default'}")
-        provider.synthesize(scene["text"], scene["emotion"], speech_path)
+    speech_path = config.AUDIO_DIR / f"speech_{skey}.mp3"
+    label = f"scene {scene['index']:02d} ({scene['timestamp']})"
+    if not cache.is_valid(speech_path):
+        print(f"  [TTS] {label} emotion={scene['emotion'] or 'default'}")
+        cache.atomic_write(speech_path,
+                           lambda tmp: provider.synthesize(scene["text"], scene["emotion"], tmp))
     else:
-        print(f"  [TTS] scene {scene['index']:02d} ({scene['timestamp']}) speech cached, skipping")
+        print(f"  [TTS] {label} speech cached, skipping")
 
     if scene["pause_ms"] > 0:
         silence_path = get_silence(scene["pause_ms"])
-        _concat_two(silence_path, speech_path, final_path)
+        cache.atomic_write(final_path, lambda tmp: _concat_two(silence_path, speech_path, tmp))
     else:
-        shutil.copyfile(speech_path, final_path)
+        cache.atomic_write(final_path, lambda tmp: shutil.copyfile(speech_path, tmp))
 
     return final_path
