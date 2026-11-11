@@ -371,6 +371,15 @@ class FalProvider(ImageProvider):
         message = _fal_error_message(resp)
         low = message.lower()
 
+        # Out of credit FIRST: 402 is the explicit signal, but some deployments phrase
+        # it as a 403 (or 400) mentioning the balance. Checking the key status first
+        # would report that as a bad key and send the user to the wrong fix.
+        if resp.status_code == 402 or "balance" in low or "insufficient" in low:
+            raise ImageQuotaError(
+                f"fal.ai reports no remaining balance, so retrying will not help. "
+                f"Top up at https://fal.ai/dashboard/billing -- a 69-scene video costs "
+                f"about $1.30 at the current settings. Detail: {message[:200]}"
+            )
         if resp.status_code in (401, 403):
             raise MissingAPIKeyError(
                 f"fal.ai rejected the key in {config.FAL_API_KEY_ENV} (HTTP "
@@ -378,18 +387,11 @@ class FalProvider(ImageProvider):
                 f'setx {config.FAL_API_KEY_ENV} "your-key" (and open a NEW terminal). '
                 f"Detail: {message[:200]}"
             )
-        # 402 is the explicit out-of-credit signal; some deployments phrase it
-        # as a 403 mentioning balance. Either way, waiting cannot fix it.
-        if resp.status_code == 402 or "balance" in low or "insufficient" in low:
-            raise ImageQuotaError(
-                f"fal.ai reports no remaining balance, so retrying will not help. "
-                f"Top up at https://fal.ai/dashboard/billing -- a 69-scene video costs "
-                f"about $1.30 at the current settings. Detail: {message[:200]}"
-            )
-        if resp.status_code == 422:
-            # Schema validation -- deterministic, and the body names the field.
+        if resp.status_code in (400, 422):
+            # A malformed request / schema validation failure is deterministic: it
+            # fails identically every time, and the body names the field.
             raise ImageRequestRejectedError(
-                f"fal.ai rejected the request (HTTP 422, will not retry). "
+                f"fal.ai rejected the request (HTTP {resp.status_code}, will not retry). "
                 f"Check the image_size/format settings in config.py -- {message}"
             )
         if resp.status_code == 429:
