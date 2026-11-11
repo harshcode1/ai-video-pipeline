@@ -7,11 +7,20 @@ import json
 import re
 import subprocess
 
+import cache
 import ffmpeg_utils
 
 TARGET_I = -14.0    # integrated loudness (LUFS), YouTube target
 TARGET_TP = -1.0    # true peak ceiling (dBTP)
 TARGET_LRA = 11.0   # loudness range
+OUTPUT_SAMPLE_RATE = 48000   # set explicitly: loudnorm resamples internally (to 192 kHz)
+
+
+def mix_key(audio_keys: list) -> str:
+    """Key of the normalized voiceover: the ordered scene audio plus the targets."""
+    return cache.short_hash(cache.STAGE_VERSIONS["mix"], list(audio_keys),
+                            {"I": TARGET_I, "TP": TARGET_TP, "LRA": TARGET_LRA,
+                             "sample_rate": OUTPUT_SAMPLE_RATE})
 
 
 def _measure(in_path) -> dict:
@@ -39,7 +48,7 @@ def normalize(in_path, out_path) -> None:
     cmd = [
         ffmpeg_utils.FFMPEG, "-y", "-i", str(in_path),
         "-af", loudnorm_filter,
-        "-ar", "48000",
+        "-ar", str(OUTPUT_SAMPLE_RATE),
         str(out_path),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)

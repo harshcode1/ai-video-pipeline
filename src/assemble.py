@@ -11,7 +11,9 @@ compute_offsets() is the pure offset-math function -- unit-tested in
 tests/test_assemble.py before ever touching a real ffmpeg process, since a
 bug here cascades through all 69 joins.
 """
+import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 import cache
@@ -152,24 +154,46 @@ def xfade_chain(clip_paths: list, out_path: Path) -> None:
     clip_durations = [timing.probe_duration(p) for p in clip_paths]
     filter_str, out_label = build_xfade_filter(clip_durations)
 
-    script_path = config.BUILD_DIR / "_xfade_filter.txt"
-    script_path.write_text(filter_str, encoding="utf-8")
+    # A unique, self-removing script file: two chains running at once (or a leftover
+    # from a crashed run) can never read each other's filter.
+    config.BUILD_DIR.mkdir(parents=True, exist_ok=True)
+    fd, script_name = tempfile.mkstemp(prefix="_xfade_", suffix=".txt", dir=config.BUILD_DIR)
+    script_path = Path(script_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(filter_str)
 
-    inputs = []
-    for p in clip_paths:
-        inputs += ["-i", str(p)]
+        inputs = []
+        for p in clip_paths:
+            inputs += ["-i", str(p)]
 
-    cmd = [
-        ffmpeg_utils.FFMPEG, "-y",
-        *inputs,
-        "-filter_complex_script", str(script_path),
-        "-map", f"[{out_label}]",
-        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(config.FPS),
-        str(out_path),
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg xfade chain failed: {result.stderr[-3000:]}")
+        cmd = [
+            ffmpeg_utils.FFMPEG, "-y",
+            *inputs,
+            "-filter_complex_script", str(script_path),
+            "-map", f"[{out_label}]",
+            "-c:v", CLIP_ENCODING["codec"], "-pix_fmt", CLIP_ENCODING["pix_fmt"], "-r", str(config.FPS),
+            str(out_path),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg xfade chain failed: {result.stderr[-3000:]}")
+    finally:
+        script_path.unlink(missing_ok=True)
+
+
+def video_key(clip_keys: list) -> str:
+    """Key of the crossfaded video: the ordered clips plus the join settings."""
+    return cache.short_hash(cache.STAGE_VERSIONS["video"], list(clip_keys),
+                            config.CROSSFADE_SECONDS, config.FPS, CLIP_ENCODING)
+
+
+MUX_SETTINGS = {"video": "copy", "audio": "aac", "audio_bitrate": "192k", "shortest": True}
+
+
+def final_key(video_key_: str, mix_key_: str) -> str:
+    """Key of the finished file: its video and its mixed audio plus the mux settings."""
+    return cache.short_hash(cache.STAGE_VERSIONS["final"], video_key_, mix_key_, MUX_SETTINGS)
 
 
 def mux_audio(video_path: Path, audio_path: Path, out_path: Path) -> None:
