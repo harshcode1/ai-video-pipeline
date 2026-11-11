@@ -6,13 +6,10 @@ video using local ffmpeg. TTS is still free and keyless. **Images are not free
 any more** — they need a funded fal.ai account with the key in `FAL_KEY`, and
 cost about $0.019 each (**~$1.30 for a 69-scene video**).
 
-Every image provider we've used went paid during 2026: Pollinations in August,
-and Google's free image tier disappeared the same month. There is now **no free
-provider that also does native 16:9 at 1080p+** — that was researched
-exhaustively, don't go looking again without new evidence. The provider is
-therefore **pluggable** (`IMAGE_PROVIDER` in `src/config.py`: `fal` | `gemini`)
-so the next death is a one-line change. See `src/config.py` for the full
-post-mortem.
+Image generation is paid everywhere now: there is **no free provider that also
+does native 16:9 at 1080p+**, researched exhaustively, so don't go looking again
+without new evidence. The provider is **pluggable** (`IMAGE_PROVIDER` in
+`src/config.py`: `fal` | `gemini`), so a provider disappearing is a one-line change.
 
 **If the user wants to make a video, run the `/make-video` command** — it handles
 the whole interview-and-render flow. **If their machine isn't set up yet, run
@@ -40,9 +37,12 @@ theirs.
 ## Golden rules
 
 1. **Never delete `build/` to "fix" a problem.** `build/` is the resume cache,
-   not garbage. Every stage checks for its own output and skips if present, so a
-   crashed run resumes for free by rerunning the same command. Deleting `build/`
-   throws away hours of GPU upscaling and rate-limited image downloads.
+   not garbage. Every output is named by a hash of everything that affects it
+   (`src/cache.py`) and a stage skips when its exact file exists, so a crashed run
+   resumes for free by rerunning the same command, and editing the script re-runs
+   only what changed. Deleting `build/` throws away paid images and hours of work.
+   (Index-named files like `03.mp3` are from older versions: never used, never
+   deleted, safe to remove by hand.)
 2. **To resume after any crash, rerun the exact same command.** Do not add
    cleanup steps, do not "start fresh."
 3. **Never hand-edit anything in `build/` or `output/`.** All of it is generated.
@@ -51,7 +51,9 @@ theirs.
    fetches.** 6s between requests keeps 429s rare and costs nothing meaningful
    against a multi-hour render. Exceeding the rate gets you throttled and makes
    the run slower, not faster. Images also cost real money now — a parallel
-   fetch storm that fails halfway still bills for what it generated.
+   fetch storm that fails halfway still bills for what it generated. (Speech and
+   clips DO run on capped pools -- `--tts-workers`, `--clip-workers` -- but images
+   never do, and the image limiter is shared and thread-safe.)
 5. **`src/config.py` is the single source of truth** for paths, voice, prosody,
    and the visual finish. Change settings there, not scattered through modules.
 6. **Timestamps are the join key.** Every `[MM:SS]` in `input/Script.txt` must
@@ -65,16 +67,17 @@ theirs.
 
 ## Pipeline stages
 
-`render.py` runs these in order; each is idempotent and disk-cached.
+`render.py` runs these in order; each is disk-cached by a hash of its inputs, so
+an edit re-runs only what depends on it.
 
 | # | Module | Does | Cache location |
 |---|---|---|---|
 | 0 | `parse.py` | Joins Script + Visuals on `MM:SS` → scene list. No network. | `build/scenes.json` |
-| 1 | `tts.py`, `audio.py`, `silence.py` | Per-line edge-tts voiceover, prosody from `[directives]`, real inserted silence for `[pause]`. | `build/audio/NN.mp3` |
+| 1 | `tts.py`, `audio.py`, `silence.py` | Per-line edge-tts voiceover, prosody from `[directives]`, real inserted silence for `[pause]`. | `build/audio/<hash>.mp3` |
 | 2 | `timing.py` | `ffprobe` measures true audio duration. **Scene length follows the actual voiceover, never the script's own timestamps.** | in-memory |
-| 3 | `images.py` | One image per scene from the provider in `IMAGE_PROVIDER`. Default fal/FLUX.2 Turbo at 2048×1152, fixed seed, 6s throttle. Needs `FAL_KEY` **+ credit**. | `build/images/NN.jpg` |
-| 4 | `upscale.py` | Real-ESRGAN 4×. **Auto-skips now** — 2048px sources already meet the working resolution. | `build/images_upscaled/NN.png` |
-| 5 | `assemble.py`, `loudness.py` | Per-scene zoompan clip → finish filters → xfade chain → mux with −14 LUFS audio. | `build/scenes/NN.mp4` → `output/` |
+| 3 | `images.py` | One image per scene from the provider in `IMAGE_PROVIDER`. Default fal/FLUX.2 Turbo at 2048×1152, fixed seed, 6s throttle. Needs `FAL_KEY` **+ credit**. | `build/images/<hash>.jpg` |
+| 4 | `upscale.py` | Real-ESRGAN 4×. **Auto-skips now** — 2048px sources already meet the working resolution. | `build/images_upscaled/<hash>.png` |
+| 5 | `assemble.py`, `loudness.py` | Per-scene zoompan clip → finish filters → xfade chain → mux with −14 LUFS audio. | `build/scenes/<hash>.mp4`, `build/final/` → `output/` |
 
 ## Commands
 
@@ -89,8 +92,8 @@ python src/render.py --indices 1,2,3      # checkpoint render -- ALWAYS do this 
 python src/render.py --all                # full run (hours)
 python src/render.py --all --no-upscale   # full run without Real-ESRGAN (rarely
                                           # needed -- it already auto-skips)
-python tests/test_assemble.py             # unit tests: xfade math (plain asserts, NOT pytest)
-python tests/test_images.py               # unit tests: image-API error classification (no network)
+python -m pytest                          # full test suite (no network, no credits; media tests need ffmpeg)
+python src/render.py --all --tts-workers 2 --clip-workers 4   # override the pool sizes for one run
 python src/forensics.py                   # QA metrics: LUFS, F0 variation, video motion
 ```
 
@@ -103,6 +106,7 @@ overrides the output location.
   **No shell restart needed afterwards** — `ffmpeg_utils.py` scans the winget
   install path directly, even though winget's own message says otherwise.
 - Core packages: `pip install -r requirements.txt` (small, fast, pure wheels).
+  Tests: `pip install -r requirements-dev.txt` (adds pytest).
 - `requirements-forensics.txt` is separate and optional — large binary wheels
   used only by `src/forensics.py`. Don't install it as part of normal setup; a
   failed opencv build must never block someone from making a video.
@@ -140,16 +144,20 @@ All in `src/config.py`:
   resampled; `doctor.py` warns if they drift apart.
 - **Always send explicit pixels, never a named preset.** `landscape_16_9` on a
   1-megapixel model means 1024×576 — *below* the 1080p output. That preset trap
-  is precisely what made the old Pollinations images blurry.
+  is exactly what once made generated images blurry.
 - `IMAGE_SEED` — back, and it matters. One fixed seed across all 69 scenes is
   what holds a single visual style together. Gemini exposes no seed at all, so
   on that provider consistency falls back to the prompt suffix alone.
 - `IMAGE_MIME_TYPES` — Gemini only. A tuple deliberately: Google's docs say both
   `image/jpeg` and `image/png` are accepted, a live run got a 400 for png, so
   `images.py` tries one and falls back. Don't collapse it to a string.
-- **There is no image seed any more** (the API exposes none). Cross-scene style
-  consistency now rests *entirely* on repeating a byte-identical style suffix on
-  every prompt in `Visuals.txt`. Guard that harder than before.
+- `TTS_WORKERS` (default 4) and `CLIP_WORKERS` (default: about half the CPU
+  cores) -- how many speech lines / scene clips run at once; the matching
+  `--tts-workers` / `--clip-workers` flags override them for one run.
+- `STAGE_VERSIONS` in `src/cache.py` -- bump a stage's version when its LOGIC
+  changes so older cached files are no longer picked up. Settings are already part
+  of the keys; the cache can't see changes on a provider's side (a model updated
+  behind the same endpoint), so force those by bumping the version.
 - `FINISH_FILTER` — the sharpen + contrast + vignette + grain chain that closes
   the "looks like an AI slideshow" gap. Read the comments before touching it;
   each value was A/B-picked by eye.
@@ -169,9 +177,9 @@ All in `src/config.py`:
 | `rejected the request (HTTP 400, will not retry)` | Malformed request — the message quotes the field and its allowed values. Deterministic, so it fails immediately instead of burning 6 retries and discarding the explanation. |
 | Image API rejects `mime_type` | Handled automatically: `images.py` retries once with the other entry in `config.IMAGE_MIME_TYPES`. The docs list both jpeg and png as valid but the live API has disagreed, so don't collapse that tuple to one value. |
 | Image fetch fails repeatedly | Backoff is already built in. A genuine 429 rate-limit is retried; a zero-quota 429 is not (see above). Do not remove the throttle. |
-| Anything suggesting Pollinations | **Retired Aug 2026 — it went paid and only ever returned 1024×576.** It still serves *cached* old prompts, so a spot-check can look like it works while every new prompt 402s. Do not wire it back in. |
 | `suspiciously small audio output` | edge-tts hiccup; retries handle it automatically. |
-| Unit tests won't even import | Only `test_assemble.py` needs ffmpeg, because `assemble.py` imports `ffmpeg_utils` at module level. `test_images.py` stubs the network and runs anywhere. |
+| TTS fails with `403 Invalid response status` | Microsoft rotated what its speech endpoint accepts and the pinned `edge-tts` is too old. `pip install -U edge-tts` (7.3.1 works; 7.2.8 did not) and update the pin in `requirements.txt`. |
+| Tests won't run | `pip install -r requirements-dev.txt`, then `python -m pytest`. Pure-logic tests load without ffmpeg; the media tests skip themselves if it's missing. |
 
 ## How long things take
 
@@ -181,8 +189,11 @@ For a ~69-scene / ~18-minute video:
 - Upscaling: **gone** — was ~53 min, now auto-skipped (sources already meet the
   working resolution)
 - TTS, scene clips, the 69-input xfade chain, and mux: **the bulk of the time
-  now** — the xfade chain is one heavy ffmpeg process
+  now** — the xfade chain is one heavy ffmpeg process. Speech and clips run on
+  pools; with real edge-tts, 12 lines took 15.9 s sequentially vs 3.9 s with 4
+  workers on one laptop (`bench/results.md`). Clip-rendering speedup is not
+  measured yet.
 
-Budget **1–2 hours** for a full run and background it. The switch to native 4K
-sources cut roughly an hour off what this used to take. A 3-scene checkpoint is
+Budget **1–2 hours** for a full run and background it. Dropping Real-ESRGAN
+cut roughly an hour off what this used to take. A 3-scene checkpoint is
 only a few minutes, which is exactly why you render one first.
