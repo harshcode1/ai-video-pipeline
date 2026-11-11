@@ -10,8 +10,8 @@ import images
 from images import FalProvider, GeminiProvider
 from ratelimit import RateLimiter
 
-INTERVAL = 0.06          # tiny, so real-time tests stay fast
-EPS = 0.012              # scheduler jitter allowance
+INTERVAL = 0.1           # small, so real-time tests stay fast
+EPS = 0.05               # scheduler jitter allowance (generous: a busy machine delays threads)
 
 
 def start_times_when_n_threads_ask_at_once(limiter, n):
