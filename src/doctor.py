@@ -150,33 +150,28 @@ def check_inputs():
         report(FAIL, "parse.py", tail[-1] if tail else "failed")
 
 
-def _run_test_file(name: str, label: str):
-    proc = subprocess.run([sys.executable, str(ROOT / "tests" / name)],
+# A quick, ffmpeg-free selection (a few seconds): the cache keys and atomic writes,
+# the input parser, the xfade offset math, and the image-API error classification.
+# The full suite (real ffmpeg, end to end) is `python -m pytest`.
+PREFLIGHT_TESTS = ["test_cache.py", "test_parse.py", "test_assemble.py", "test_images.py",
+                   "test_provider_errors.py", "test_image_keys.py", "test_config.py"]
+
+
+def check_unit_tests(ffmpeg_ok: bool = True):
+    """Prove the parts a silent bug would corrupt before spending hours on a run:
+    cache naming, parsing, xfade offsets, and image-API error classification."""
+    files = [str(ROOT / "tests" / name) for name in PREFLIGHT_TESTS]
+    proc = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *files],
                           capture_output=True, text=True, cwd=str(ROOT),
                           encoding="utf-8", errors="replace",
                           env={**os.environ, "PYTHONIOENCODING": "utf-8"})
-    summary = [l for l in (proc.stdout or "").splitlines() if "passed" in l]
-    detail = summary[-1].strip() if summary else ("passed" if proc.returncode == 0 else "failed")
-    report(PASS if proc.returncode == 0 else FAIL, label, detail)
-
-
-def check_unit_tests(ffmpeg_ok: bool):
-    """Two things worth proving before spending hours on a full run: the xfade
-    offset math (a silent bug there corrupts every join in the video), and the
-    image-API error classification (a misclassified failure wastes minutes per
-    scene and reports the wrong cause)."""
-    # The image tests stub out the network and never import assemble, so they
-    # run with or without ffmpeg.
-    _run_test_file("test_images.py", "unit tests (images)")
-
-    if not ffmpeg_ok:
-        # These are pure math, but they import assemble, which imports
-        # ffmpeg_utils at module level -- so they cannot even load without
-        # ffmpeg present. Report honestly as skipped rather than as a failure.
-        report(WARN, "unit tests (assemble)",
-               "skipped -- cannot import assemble.py without ffmpeg installed")
+    out = (proc.stdout or "") + (proc.stderr or "")
+    if "No module named pytest" in out:
+        report(WARN, "unit tests", "pytest is not installed -- pip install -r requirements-dev.txt")
         return
-    _run_test_file("test_assemble.py", "unit tests (assemble)")
+    summary = [l for l in (proc.stdout or "").splitlines() if " passed" in l or " failed" in l]
+    detail = summary[-1].strip() if summary else ("passed" if proc.returncode == 0 else "failed")
+    report(PASS if proc.returncode == 0 else FAIL, "unit tests", detail)
 
 
 def check_upscaler(test_upscale=False):
